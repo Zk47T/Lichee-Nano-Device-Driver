@@ -1,0 +1,8 @@
+output/
+files/sdimg
+files/sdimg.bmap
+*.o
+*.ko
+*.mod.c
+boot.scr
+.claude/

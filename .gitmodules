@@ -1,0 +1,7 @@
+[submodule "linux"]
+	path = linux
+	url = https://github.com/Zk47T/linux.git
+	branch = licheepi-nano-v5.4.y
+[submodule "u-boot-f1c100s"]
+	path = u-boot-f1c100s
+	url = https://github.com/Zk47T/u-boot-f1c100s.git
