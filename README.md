@@ -18,7 +18,7 @@ Kernel: Linux 5.4.77 | Toolchain: `arm-linux-gnueabi` (GCC 11)
 `linux` and `u-boot-f1c100s` are git submodules. Use `--recurse-submodules` to clone everything in one step:
 
 ```bash
-git clone --recurse-submodules git@github.com:Zk47T/device-driver-lichee.git
+git clone --recurse-submodules https://github.com/Zk47T/Lichee-Nano-Device-Driver.git
 ```
 
 If you already cloned without it, fetch the submodules after:
