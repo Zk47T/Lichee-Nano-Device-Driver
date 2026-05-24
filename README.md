@@ -13,6 +13,22 @@ Kernel: Linux 5.4.77 | Toolchain: `arm-linux-gnueabi` (GCC 11)
 
 ---
 
+## 0. Clone This Repo
+
+`linux` and `u-boot-f1c100s` are git submodules. Use `--recurse-submodules` to clone everything in one step:
+
+```bash
+git clone --recurse-submodules git@github.com:Zk47T/device-driver-lichee.git
+```
+
+If you already cloned without it, fetch the submodules after:
+
+```bash
+git submodule update --init
+```
+
+---
+
 ## 1. Host Requirements
 
 ```bash
