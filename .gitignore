@@ -6,3 +6,5 @@ files/sdimg.bmap
 *.mod.c
 boot.scr
 .claude/
+output-new/*
+.vscode
