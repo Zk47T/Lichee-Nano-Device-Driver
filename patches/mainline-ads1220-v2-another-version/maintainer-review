@@ -1,0 +1,1472 @@
+
+Andy Shevchenko <andriy.shevchenko@intel.com>
+14:06 (6 giờ trước)
+đến tôi, Jonathan, linux-iio, devicetree, Rob, Krzysztof, Conor, David, Nuno, Andy, linux-kernel
+
+On Wed, Jun 10, 2026 at 10:13:40PM +0700, Nguyen Minh Tien wrote:
+> This series adds support for the Texas Instruments ADS1220, a 24-bit,
+> 2-kSPS, 4-channel delta-sigma ADC with an SPI (mode 1) interface, a
+> programmable gain amplifier (1 to 128), an internal 2.048V reference and
+> a dedicated DRDY data-ready output.
+>
+> The driver supports:
+>  - single-ended and differential voltage channels described as
+>    device-tree child nodes;
+>  - per-channel programmable gain (via _scale) and data rate (via
+>    _sampling_frequency), with the matching *_available attributes;
+>  - the internal 2.048V reference, an external reference on REFP0/REFN0
+>    via a regulator, or the analog supply (AVDD) as a ratiometric
+>    reference for single-supply measurements;
+>  - single-shot conversions gated on the DRDY interrupt, or on a
+>    data-rate-derived delay when no interrupt is wired;
+>  - a DRDY-interrupt-driven triggered buffer for streaming;
+>  - runtime PM (power-down between conversions).
+>
+> I tested this on a Lichee Pi Nano (Allwinner F1C100s) running Linux 7.0:
+> with a potentiometer on AIN0 (single-ended against AVSS, AVDD as the
+> reference), in_voltage0_raw tracks the wiper linearly across the full
+> 0..3.3V range (0 to 0x7fffff). Nothing in the driver is board-specific -
+> it only uses the SPI and IIO frameworks - so it should work on any SPI
+> host.
+>
+> This is my first kernel contribution. I modelled the driver on the
+> existing TI ADS-family IIO drivers - ti-ads1119 for the structure and
+> ti-ads124s08 for the SPI side - so I'd welcome any feedback on things
+> I've missed.
+
+When adding a brand new driver, answer to the following questions:
+- Why a new driver? Can any existed one cover these chips with some refactoring?
+- Where to find a datasheet (URL, other means)?
+
+Jonathan Cameron
+19:16 (1 giờ trước)
+đến linux-iio, Krzysztof, David, Nuno, Andy, linux-kernel, tôi, devicetree, Rob, Conor
+
+On Wed, 10 Jun 2026 22:13:41 +0700
+Nguyen Minh Tien <zizuzacker@gmail.com> wrote:
+
+> The ADS1220 is a 24-bit, 2-kSPS, 4-channel delta-sigma ADC from Texas
+> Instruments with an SPI (mode 1) interface, a programmable gain amplifier,
+> an internal 2.048V reference and a dedicated DRDY data-ready output.
+>
+> Add a device tree binding describing the SPI device and its per-input
+> channel child nodes (single-ended AINx or the multiplexer's differential
+> pairs), the optional external/AVDD reference selection and the DRDY
+> interrupt.
+>
+> Signed-off-by: Nguyen Minh Tien <zizuzacker@gmail.com>
+
+Given Andy asked the big questions, I'll focus in on what is here
+with assumption there is a good reason this can't be merged with existing
+driver and / or binding.  Note that it is fine to combine bindings but not
+drivers, or indeed the other way around.
+
+There are some interesting complex corners on this device - such as the RTD
+configurations (current outputs on what would otherwise be input channels).
+It might be worth looking at some of the other RTD supporting sensors
+in tree and how their bindings are done.  The bridge setup is also
+a little interesting as we need to know to enable the bypass of AIN3 to
+AVSS.
+
+Normally we strongly push for a binding to be complete as possible from
+the start, even if the driver doesn't support some features yet but
+here that may make it more complex.
+
+Just a couple of comments below
+
+Thanks,
+
+Jonathan
+
+
+
+
+> ---
+>  .../bindings/iio/adc/ti,ads1220.yaml          | 146 ++++++++++++++++++
+>  1 file changed, 146 insertions(+)
+>  create mode 100644 Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+>
+> diff --git a/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml b/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+> new file mode 100644
+> index 000000000..1fedffc2a
+> --- /dev/null
+> +++ b/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+> @@ -0,0 +1,146 @@
+> +# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+> +%YAML 1.2
+> +---
+> +$id: http://devicetree.org/schemas/iio/adc/ti,ads1220.yaml#
+> +$schema: http://devicetree.org/meta-schemas/core.yaml#
+> +
+> +title: Texas Instruments ADS1220 ADC
+> +
+> +maintainers:
+> +  - Nguyen Minh Tien <zizuzacker@gmail.com>
+> +
+> +description:
+> +  The TI ADS1220 is a precision 24-bit, 2-kSPS, delta-sigma ADC with an SPI
+> +  (mode 1) interface. It provides two differential or four single-ended inputs
+> +  through a multiplexer, a programmable gain amplifier (gain 1 to 128), an
+> +  internal 2.048V reference and oscillator, two programmable excitation current
+> +  sources and a 50/60Hz rejection filter. A dedicated DRDY output signals when a
+> +  new conversion result is available.
+
+Ideally put a datasheet reference in this description.
+
+
+> +
+> +properties:
+> +  compatible:
+> +    const: ti,ads1220
+> +
+> +  reg:
+> +    maxItems: 1
+> +
+> +  spi-cpha: true
+> +
+> +  interrupts:
+> +    description: DRDY pin, signals that a new conversion result is ready.
+> +    maxItems: 1
+> +
+> +  avdd-supply:
+> +    description: Analog power supply (AVDD/AVSS).
+> +
+> +  dvdd-supply:
+> +    description: Digital power supply (DVDD/DGND).
+> +
+> +  vref-supply:
+> +    description:
+> +      External reference voltage (REFP0/REFN0). If omitted, the internal
+> +      2.048V reference is used unless ti,vref-avdd is set.
+> +
+> +  ti,vref-avdd:
+> +    type: boolean
+> +    description:
+> +      Use the analog supply (AVDD/AVSS) as the conversion reference instead of
+> +      the internal 2.048V reference. Suited to ratiometric single-supply
+> +      measurements (for example a potentiometer wired across AVDD), giving a
+> +      full 0..AVDD input range without an external reference. Ignored when
+> +      vref-supply is present.
+> +
+> +  "#address-cells":
+> +    const: 1
+> +
+> +  "#size-cells":
+> +    const: 0
+> +
+> +  "#io-channel-cells":
+> +    const: 1
+> +
+> +required:
+> +  - compatible
+> +  - reg
+> +  - "#address-cells"
+> +  - "#size-cells"
+> +  - avdd-supply
+> +  - dvdd-supply
+> +
+> +patternProperties:
+> +  "^channel@[0-6]$":
+> +    $ref: adc.yaml
+> +    type: object
+> +    description: Represents one ADC input configuration (channel).
+> +
+> +    properties:
+> +      reg:
+> +        minimum: 0
+> +        maximum: 6
+
+Why 6?  Is the idea that you might have both differential and single ended
+inputs from the same physical wires, or overlapping differential
+pairs? In practice that rarely reflects how boards are wired.
+However I can't immediately figure out a combination that ends up with 7 channels.
+
+
+> +
+> +      diff-channels:
+> +        description:
+> +          Differential input pair routable by the ADS1220 multiplexer.
+> +        oneOf:
+> +          - items: [const: 0, const: 1]
+> +          - items: [const: 0, const: 2]
+> +          - items: [const: 0, const: 3]
+> +          - items: [const: 1, const: 2]
+> +          - items: [const: 1, const: 3]
+> +          - items: [const: 2, const: 3]
+> +          - items: [const: 1, const: 0]
+> +          - items: [const: 3, const: 2]
+> +
+> +      single-channel:
+> +        description:
+> +          Single-ended input channel AINx measured against AVSS.
+> +        minimum: 0
+> +        maximum: 3
+> +
+> +    oneOf:
+> +      - required: [diff-channels]
+> +      - required: [single-channel]
+> +
+> +    required:
+> +      - reg
+> +
+> +    unevaluatedProperties: false
+> +
+> +allOf:
+> +  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+> +
+> +unevaluatedProperties: false
+> +
+> +examples:
+> +  - |
+> +    #include <dt-bindings/interrupt-controller/irq.h>
+> +
+> +    spi {
+> +        #address-cells = <1>;
+> +        #size-cells = <0>;
+> +
+> +        adc@0 {
+> +            compatible = "ti,ads1220";
+> +            reg = <0>;
+> +            spi-max-frequency = <2500000>;
+> +            spi-cpha;
+> +            interrupt-parent = <&pio>;
+> +            interrupts = <4 4 IRQ_TYPE_EDGE_FALLING>;
+> +            avdd-supply = <&reg_vcc3v3>;
+> +            dvdd-supply = <&reg_vcc3v3>;
+> +            #address-cells = <1>;
+> +            #size-cells = <0>;
+> +            #io-channel-cells = <1>;
+> +
+> +            channel@0 {
+> +                reg = <0>;
+> +                single-channel = <0>;
+> +            };
+> +
+> +            channel@1 {
+> +                reg = <1>;
+> +                diff-channels = <0 1>;
+> +            };
+> +        };
+> +    };
+> +...
+
+
+
+
+Jonathan Cameron
+20:01 (35 phút trước)
+đến linux-iio, Krzysztof, David, Nuno, Andy, linux-kernel, tôi, devicetree, Rob, Conor
+
+On Wed, 10 Jun 2026 22:13:42 +0700
+Nguyen Minh Tien <zizuzacker@gmail.com> wrote:
+
+> Add an IIO driver for the Texas Instruments ADS1220 24-bit delta-sigma
+> SPI ADC. The driver supports single-ended and differential voltage
+> channels described as device-tree child nodes, per-channel programmable
+> gain (exposed through scale) and data rate (exposed through sampling
+> frequency), the internal 2.048V reference, an external reference via a
+> regulator, or the analog supply (AVDD) as a ratiometric reference,
+> single-shot conversions and a DRDY-interrupt-driven triggered buffer.
+> Conversions are gated either on the DRDY interrupt or, when no interrupt
+> is wired, on a data-rate-derived delay. Runtime PM powers the device down
+> between conversions.
+>
+> Signed-off-by: Nguyen Minh Tien <zizuzacker@gmail.com>
+
+https://sashiko.dev/#/patchset/20260610151342.44274-1-zizuzacker%40gmail.com
+Has some feedback.  Take a look, but do be aware it is sometimes wrong.
+For example, it is common for SPI controllers to use buffers that are
+next to each other for DMA.  Maybe it's not the intent of the DMA framework
+but in practice it works.
+
+Various comments inline
+
+Thanks,
+
+Jonathan
+
+> ---
+>  MAINTAINERS                  |   7 +
+>  drivers/iio/adc/Kconfig      |  12 +
+>  drivers/iio/adc/Makefile     |   1 +
+>  drivers/iio/adc/ti-ads1220.c | 835 +++++++++++++++++++++++++++++++++++
+>  4 files changed, 855 insertions(+)
+>  create mode 100644 drivers/iio/adc/ti-ads1220.c
+>
+> diff --git a/MAINTAINERS b/MAINTAINERS
+> index 396d4e76d..1797af05c 100644
+> --- a/MAINTAINERS
+> +++ b/MAINTAINERS
+> @@ -26661,6 +26661,13 @@ S:   Maintained
+>  F:   Documentation/devicetree/bindings/iio/adc/ti,ads1119.yaml
+>  F:   drivers/iio/adc/ti-ads1119.c
+> 
+> +TI ADS1220 ADC DRIVER
+> +M:   Nguyen Minh Tien <zizuzacker@gmail.com>
+> +L:   linux-iio@vger.kernel.org
+> +S:   Maintained
+> +F:   Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+Bring this in with the first file, so in the binding doc.
+> +F:   drivers/iio/adc/ti-ads1220.c
+And add this line in this patch.
+
+> diff --git a/drivers/iio/adc/ti-ads1220.c b/drivers/iio/adc/ti-ads1220.c
+> new file mode 100644
+> index 000000000..06bcc8841
+> --- /dev/null
+> +++ b/drivers/iio/adc/ti-ads1220.c
+;
+> +
+> +/*
+> + * Available scales expressed as gain reciprocals (val / val2), matching the
+> + * convention used by the sibling ti-ads1119 driver: writing 0.25 selects a
+> + * gain of 4. The full list is used for differential channels; single-ended
+> + * channels (which force the PGA into bypass) are limited to the first three
+> + * entries (gains 1, 2, 4).
+
+This doesn't feel right. I'd expect to see scaling including the reference voltage
+so you'll have to compute the array at runtime.  Maybe we have an historical bug
+in the ads1119 if it is not having it's read_raw and write_raw match values.
+This is accessed other than for DMA.  So if you want it in the structure
+move it before the section that has forced alignment.  However, see below
+- I think in this case simply using spi_write_then_read() everywhere
+will be a useful simplification.
+
+> +};
+> +
+> +static int ads1220_command(struct ads1220_state *st, u8 cmd)
+> +{
+> +     st->tx[0] = cmd;
+> +
+> +     return spi_write(st->spi, st->tx, 1);
+> +}
+> +
+> +static int ads1220_write_reg(struct ads1220_state *st, u8 reg, u8 val)
+> +{
+> +     st->tx[0] = ADS1220_CMD_WREG_REG(reg);
+> +     st->tx[1] = val;
+> +
+> +     return spi_write(st->spi, st->tx, 2);
+
+Given the buffers are small, you could use spi_write_the_read() with 0 sized
+read to avoid need for DMA safe buffers.  I think that would end up
+a little simpler and the cost will be tiny.
+
+> +}
+> +
+> +static int ads1220_read_reg(struct ads1220_state *st, u8 reg, u8 *val)
+> +{
+> +     int ret;
+> +
+> +     st->tx[0] = ADS1220_CMD_RREG_REG(reg);
+> +
+> +     ret = spi_write_then_read(st->spi, st->tx, 1, st->rx, 1);
+
+Can use local variables for the buffers (it bounces the data anyway)
+which might be a little simpler to read.
+
+> +     if (ret)
+> +             return ret;
+> +
+> +     *val = st->rx[0];
+> +
+> +     return 0;
+> +}
+> +
+> +static int ads1220_reset(struct ads1220_state *st)
+> +{
+> +     int ret;
+> +
+> +     ret = ads1220_command(st, ADS1220_CMD_RESET);
+> +     if (ret)
+> +             return ret;
+> +
+> +     /* Wait at least 50us + 32 x tCLK after RESET before any command. */
+
+Not obvious how this matches value of 100 to fsleep. Please provide
+a little more info - such as what rate of tCLK is.
+
+> +     fsleep(100);
+> +
+> +     return 0;
+> +}
+
+> +static int ads1220_single_conversion(struct ads1220_state *st,
+> +                                  const struct iio_chan_spec *chan,
+> +                                  int *val, bool calib_offset)
+> +{
+> +     struct device *dev = &st->spi->dev;
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +     unsigned int mux = cfg->mux;
+> +     bool single_ended = cfg->single_ended;
+> +     int ret;
+> +
+> +     if (calib_offset) {
+> +             mux = ADS1220_MUX_SHORTED;
+> +             single_ended = false;
+> +     }
+> +
+> +     ret = pm_runtime_resume_and_get(dev);
+> +     if (ret)
+> +             return ret;
+> +
+> +     ret = ads1220_configure(st, mux, cfg->gain, cfg->datarate,
+> +                             single_ended, false);
+> +     if (ret)
+> +             goto out;
+> +
+> +     if (st->spi->irq)
+> +             reinit_completion(&st->completion);
+> +
+> +     ret = ads1220_command(st, ADS1220_CMD_START);
+> +     if (ret)
+> +             goto out;
+> +
+> +     ret = ads1220_read_sample(st, cfg->datarate, val);
+> +     if (ret)
+> +             goto out;
+> +
+> +     ret = IIO_VAL_INT;
+> +out:
+> +     pm_runtime_mark_last_busy(dev);
+> +     pm_runtime_put_autosuspend(dev);
+> +
+> +     return ret;
+> +}
+> +
+> +static int ads1220_read_raw(struct iio_dev *indio_dev,
+> +                         const struct iio_chan_spec *chan,
+> +                         int *val, int *val2, long mask)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +     int ret;
+> +
+> +     switch (mask) {
+> +     case IIO_CHAN_INFO_RAW:
+> +             if (!iio_device_claim_direct(indio_dev))
+> +                     return -EBUSY;
+> +             ret = ads1220_single_conversion(st, chan, val, false);
+> +             iio_device_release_direct(indio_dev);
+> +             return ret;
+> +     case IIO_CHAN_INFO_OFFSET:
+> +             if (!iio_device_claim_direct(indio_dev))
+> +                     return -EBUSY;
+> +             ret = ads1220_single_conversion(st, chan, val, true);
+
+I think a comment on why this shorted channel is appropriate for offset
+would be good (and sashiko thinks you have the sign wrong)
+
+
+> +             iio_device_release_direct(indio_dev);
+> +             return ret;
+> +     case IIO_CHAN_INFO_SCALE:
+> +             /* scale [mV] = vref / (gain * 2^23); gain is a power of two. */
+> +             *val = st->vref_uV / MILLI;
+> +             *val2 = (chan->scan_type.realbits - 1) + ilog2(cfg->gain);
+> +             return IIO_VAL_FRACTIONAL_LOG2;
+> +     case IIO_CHAN_INFO_SAMP_FREQ:
+> +             *val = cfg->datarate;
+> +             return IIO_VAL_INT;
+> +     default:
+> +             return -EINVAL;
+> +     }
+> +}
+> +
+> +static int ads1220_read_avail(struct iio_dev *indio_dev,
+> +                           const struct iio_chan_spec *chan,
+> +                           const int **vals, int *type, int *length,
+> +                           long mask)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +
+> +     switch (mask) {
+> +     case IIO_CHAN_INFO_SCALE:
+> +             *type = IIO_VAL_FRACTIONAL;
+> +             *vals = ads1220_scale_avail;
+> +             *length = cfg->single_ended ? ADS1220_SE_SCALE_AVAIL_LEN :
+> +                                           ADS1220_SCALE_AVAIL_LEN;
+> +             return IIO_AVAIL_LIST;
+> +     case IIO_CHAN_INFO_SAMP_FREQ:
+> +             *type = IIO_VAL_INT;
+> +             *vals = ads1220_datarates;
+> +             *length = ARRAY_SIZE(ads1220_datarates);
+> +             return IIO_AVAIL_LIST;
+> +     default:
+> +             return -EINVAL;
+> +     }
+> +}
+> +
+> +static int ads1220_write_raw(struct iio_dev *indio_dev,
+> +                          const struct iio_chan_spec *chan,
+> +                          int val, int val2, long mask)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +     unsigned int gain;
+> +     int i;
+> +
+> +     switch (mask) {
+> +     case IIO_CHAN_INFO_SCALE:
+> +             /* The available scales are the gain reciprocals (e.g. 1/4). */
+> +             if (val == 0 && val2 == 0)
+> +                     return -EINVAL;
+> +
+> +             gain = MICRO / (val * MICRO + val2);
+> +             if (!is_power_of_2(gain) || gain > BIT(ADS1220_NUM_GAINS - 1))
+> +                     return -EINVAL;
+> +             if (cfg->single_ended && gain > ADS1220_MAX_SE_GAIN)
+> +                     return -EINVAL;
+> +
+> +             cfg->gain = gain;
+
+Sashiko called this out.  The value written here should be the same as the
+one we read back from read_raw().  If seems this one isn't taking the reference
+voltage into account and should be doing so.
+
+Sadly there is no way to reverse IIO_VAL_FRACTIONAL so to make things easier
+you may have to stop using that for the avail and read_raw callbacks and instead
+compute the values for IIO_VAL_INT_PLUS_MICRO
+
+> +             return 0;
+> +     case IIO_CHAN_INFO_SAMP_FREQ:
+> +             for (i = 0; i < ARRAY_SIZE(ads1220_datarates); i++) {
+> +                     if (ads1220_datarates[i] == val) {
+> +                             cfg->datarate = val;
+> +                             return 0;
+> +                     }
+> +             }
+> +             return -EINVAL;
+> +     default:
+> +             return -EINVAL;
+> +     }
+> +}
+
+> +
+Read current kernel implementation of pm_runtime_put_autosuspend()
+and consider if this pair of calls makes sense any more (it used to!)
+
+> +
+> +     return 0;
+> +}
+> +
+> +static const struct iio_buffer_setup_ops ads1220_buffer_setup_ops = {
+> +     .preenable = ads1220_buffer_preenable,
+> +     .postdisable = ads1220_buffer_postdisable,
+> +     .validate_scan_mask = &iio_validate_scan_mask_onehot,
+
+I haven't really thought this through but is onehot suitable for this
+device?  Obvious in simple continuous conversion modes you haven't
+a lot of choice, but I think a more complex SPI handling can do
+the appropriate channel updates in parallel with capture of the
+previous channel.   Fine to leave that until we have a user though!
+
+> +};
+> +
+> +static const struct iio_trigger_ops ads1220_trigger_ops = {
+> +     .validate_device = &iio_trigger_validate_own_device,
+> +};
+
+Just to check, can this device be used with other triggers?
+
+
+> +
+> +static int ads1220_map_mux(struct device *dev, u32 ain_pos, u32 ain_neg,
+> +                        bool differential, unsigned int *mux,
+> +                        bool *single_ended)
+> +{
+> +     static const u8 diff_mux[ADS1220_MAX_AIN][ADS1220_MAX_AIN] = {
+> +             [0][1] = 0x0, [0][2] = 0x1, [0][3] = 0x2,
+> +             [1][2] = 0x3, [1][3] = 0x4, [1][0] = 0x6,
+> +             [2][3] = 0x5,
+> +             [3][2] = 0x7,
+> +     };
+> +
+> +     if (!differential) {
+> +             if (ain_pos >= ADS1220_MAX_AIN)
+> +                     return -EINVAL;
+> +             *mux = ADS1220_MUX_SINGLE(ain_pos);
+> +             *single_ended = true;
+> +             return 0;
+> +     }
+> +
+> +     if (ain_pos >= ADS1220_MAX_AIN || ain_neg >= ADS1220_MAX_AIN)
+> +             return -EINVAL;
+> +
+> +     /* Only the input pairs the multiplexer can route are valid. */
+> +     if (ain_pos == ain_neg || (diff_mux[ain_pos][ain_neg] == 0 &&
+> +                                !(ain_pos == 0 && ain_neg == 1)))
+
+The check is a little ugly.  Maybe it would be simpler to use MAX_U8 as a
+marker and fill the rest of the table above.
+
+
+> +             return -EINVAL;
+> +
+> +     *mux = diff_mux[ain_pos][ain_neg];
+> +     *single_ended = false;
+> +
+> +     return 0;
+> +}
+> +
+> +static int ads1220_alloc_channels(struct iio_dev *indio_dev)
+> +{
+> +     const struct iio_chan_spec ads1220_channel = {
+> +             .type = IIO_VOLTAGE,
+> +             .indexed = 1,
+> +             .info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+> +                                   BIT(IIO_CHAN_INFO_SCALE) |
+> +                                   BIT(IIO_CHAN_INFO_OFFSET) |
+> +                                   BIT(IIO_CHAN_INFO_SAMP_FREQ),
+> +             .info_mask_separate_available = BIT(IIO_CHAN_INFO_SCALE) |
+> +                                             BIT(IIO_CHAN_INFO_SAMP_FREQ),
+> +             .scan_type = {
+> +                     .sign = 's',
+> +                     .realbits = ADS1220_DATA_BITS,
+> +                     .storagebits = 32,
+> +                     .endianness = IIO_CPU,
+> +             },
+> +     };
+> +     const struct iio_chan_spec ads1220_ts = IIO_CHAN_SOFT_TIMESTAMP(0);
+
+That is now a designated initializer after a recent patch from David, so you
+can now avoid the local variable and assign from the macro directly.
+
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct device *dev = &st->spi->dev;
+> +     struct iio_chan_spec *channels, *chan;
+> +     unsigned int num_channels, i = 0;
+
+Don't mix assigning and non assigning declarations - they are sometimes hard
+to read (though obviously this simple one isn't too bad!)
+
+
+> +     int ret;
+> +
+> +     st->num_channels_cfg = device_get_child_node_count(dev);
+> +     if (st->num_channels_cfg == 0 ||
+> +         st->num_channels_cfg > ADS1220_MAX_CHANNELS)
+> +             return dev_err_probe(dev, -EINVAL,
+> +                                  "Invalid channel count %u (max %u)\n",
+> +                                  st->num_channels_cfg, ADS1220_MAX_CHANNELS);
+> +
+> +     st->channels_cfg = devm_kcalloc(dev, st->num_channels_cfg,
+> +                                     sizeof(*st->channels_cfg), GFP_KERNEL);
+> +     if (!st->channels_cfg)
+> +             return -ENOMEM;
+> +
+> +     /* One extra channel for the timestamp. */
+> +     num_channels = st->num_channels_cfg + 1;
+> +     channels = devm_kcalloc(dev, num_channels, sizeof(*channels),
+> +                             GFP_KERNEL);
+> +     if (!channels)
+> +             return -ENOMEM;
+> +
+> +     device_for_each_child_node_scoped(dev, child) {
+> +             struct ads1220_channel_config *cfg = &st->channels_cfg[i];
+> +             bool differential;
+> +             u32 ain[2];
+> +
+> +             differential = fwnode_property_present(child, "diff-channels");
+> +             if (differential)
+> +                     ret = fwnode_property_read_u32_array(child,
+> +                                                          "diff-channels",
+> +                                                          ain, 2);
+> +             else
+> +                     ret = fwnode_property_read_u32(child, "single-channel",
+> +                                                    &ain[0]);
+> +             if (ret)
+> +                     return dev_err_probe(dev, ret,
+> +                                          "Failed to read channel property\n");
+> +
+> +             ret = ads1220_map_mux(dev, ain[0], ain[1], differential,
+> +                                   &cfg->mux, &cfg->single_ended);
+> +             if (ret)
+> +                     return dev_err_probe(dev, ret,
+> +                                          "Invalid input combination\n");
+> +
+> +             cfg->gain = 1;
+> +             cfg->datarate = ads1220_datarates[0];
+> +
+> +             chan = &channels[i];
+> +             *chan = ads1220_channel;
+
+I'd use a designated intializer here instead of a const that you copy.
+That lets us combine a bunch of stuff into one place.
+
+
+                channels[i++] = (struct iio_chan_spec) = {
+                        .type = IIO_VOLTAGE,
+                        .indexed = 1,
+                        .differental = differential ? 1 : 0,
+                        .channel = ain[0],
+                        .channel2 = ain[1], // just make sure this is set to 0 above.
+                        .address = i,
+                        .info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+                                              BIT(IIO_CHAN_INFO_SCALE) |
+                                              BIT(IIO_CHAN_INFO_OFFSET) |
+                                              BIT(IIO_CHAN_INFO_SAMP_FREQ),
+                        .info_mask_separate_available = BIT(IIO_CHAN_INFO_SCALE) |
+                                                        BIT(IIO_CHAN_INFO_SAMP_FREQ),
+                        .scan_index = i,
+                        .scan_type = {
+                                .sign = 's',
+                                .realbits = ADS1220_DATA_BITS,
+                                .storagebits = 32,
+                                .endianness = IIO_CPU,
+                        },
+
+                };
+
+> +             chan->channel = ain[0];
+> +             chan->address = i;
+> +             chan->scan_index = i;
+> +             if (differential) {
+> +                     chan->channel2 = ain[1];
+> +                     chan->differential = 1;
+> +             }
+> +
+> +             i++;
+> +     }
+> +
+> +     channels[i] = ads1220_ts;
+> +     channels[i].scan_index = i;
+> +
+> +     indio_dev->channels = channels;
+> +     indio_dev->num_channels = num_channels;
+> +
+> +     return 0;
+> +}
+> +
+> +static int ads1220_init(struct ads1220_state *st)
+> +{
+> +     u8 reg2;
+> +     int ret;
+> +
+> +     ret = ads1220_reset(st);
+> +     if (ret)
+> +             return ret;
+> +
+> +     reg2 = FIELD_PREP(ADS1220_CFG2_VREF, st->vref_source);
+> +
+> +     ret = ads1220_write_reg(st, ADS1220_REG_CONFIG2, reg2);
+> +     if (ret)
+> +             return ret;
+> +
+> +     /* DRDY only on the dedicated pin (DRDYM = 0). */
+> +     return ads1220_write_reg(st, ADS1220_REG_CONFIG3, 0);
+
+We might want something in the dt binding about the other case
+not making sense.  We can't safely do interrupts on an SPI data line
+(though some SoCs happen to do the right things to make that work)
+so we will in general use another pin tied to that line.  If that
+were the case might as well wire it to the separate pin instead.
+
+> +}
+
+> +
+> +static int ads1220_probe(struct spi_device *spi)
+> +{
+> +     struct device *dev = &spi->dev;
+> +     struct iio_dev *indio_dev;
+> +     struct ads1220_state *st;
+> +     int avdd_uV;
+> +     int ret;
+> +
+> +     indio_dev = devm_iio_device_alloc(dev, sizeof(*st));
+> +     if (!indio_dev)
+> +             return -ENOMEM;
+> +
+> +     st = iio_priv(indio_dev);
+> +     st->spi = spi;
+> +     spi_set_drvdata(spi, indio_dev);
+> +
+> +     /* The ADS1220 uses SPI mode 1 (CPOL = 0, CPHA = 1). */
+> +     spi->mode |= SPI_CPHA;
+> +     spi->bits_per_word = 8;
+
+Fairly sure that 8 is the default, so no point in setting it here.
+
+> +     ret = spi_setup(spi);
+> +     if (ret)
+> +             return dev_err_probe(dev, ret, "SPI setup failed\n");
+> +
+> +     indio_dev->name = "ads1220";
+> +     indio_dev->info = &ads1220_info;
+> +     indio_dev->modes = INDIO_DIRECT_MODE;
+> +
+> +     ret = devm_regulator_get_enable(dev, "dvdd");
+> +     if (ret)
+> +             return dev_err_probe(dev, ret, "Failed to enable dvdd\n");
+> +
+> +     avdd_uV = devm_regulator_get_enable_read_voltage(dev, "avdd");
+> +     if (avdd_uV < 0)
+> +             return dev_err_probe(dev, avdd_uV, "Failed to get avdd\n");
+Prefer
+        ret = devm_regulator_get_enable_read_voltage(dev, "avdd");
+        if (ret < 0)
+                return dev_err..
+        avdd_uV = ret;
+
+Mostly because we don't need to check avdd_uV is signed and general principle
+of avoiding reading it.
+
+However, given it's fairly common to not be able to read a voltage from a regulator
+you may want to only do this (rather than simply enabling it) if you need
+it for a channel reference.
+
+> +
+> +     /*
+> +      * Reference source, in priority order:
+> +      *  - external reference on REFP0/REFN0 if a "vref" regulator is given;
+> +      *  - the analog supply (AVDD) for ratiometric single-supply setups if
+> +      *    "ti,vref-avdd" is set - no extra pins, full 0..AVDD input range;
+> +      *  - otherwise the internal 2.048V reference.
+> +      */
+> +     st->vref_uV = devm_regulator_get_enable_read_voltage(dev, "vref");
+> +     if (st->vref_uV >= 0) {
+> +             st->vref_source = ADS1220_VREF_REFP0_REFN0;
+> +     } else if (st->vref_uV != -ENODEV) {
+> +             return dev_err_probe(dev, st->vref_uV, "Failed to get vref\n");
+> +     } else if (device_property_read_bool(dev, "ti,vref-avdd")) {
+
+As above, I'd only get the voltage on avdd here.
+
+> +             st->vref_source = ADS1220_VREF_AVDD;
+> +             st->vref_uV = avdd_uV;
+> +     } else {
+> +             st->vref_source = ADS1220_VREF_INTERNAL;
+> +             st->vref_uV = ADS1220_INTERNAL_VREF_uV;
+> +     }
+
+> +
+> +static int ads1220_runtime_resume(struct device *dev)
+> +{
+> +     /*
+> +      * A START/SYNC command wakes the analog parts from power-down; it is
+> +      * issued by the conversion path, so there is nothing to do here beyond
+> +      * letting the device settle after the supplies are active again.
+
+This isn't manipulating the supplies so why do we need to wait for them?
+
+> +      */
+> +     fsleep(100);
+> +
+> +     return 0;
+> +}
+> +
+> +static DEFINE_RUNTIME_DEV_PM_OPS(ads1220_pm_ops, ads1220_runtime_suspend,
+> +                              ads1220_runtime_resume, NULL);
+> +
+> +static const struct spi_device_id ads1220_id[] = {
+> +     { "ads1220" },
+
+Please use a name initializer here.  We are cleaning up this across
+IIO at the moment as it makes things easier to read and possible enables
+more interesting spi_device_id structures in future.
+
+> +     { }
+> +};
+> +MODULE_DEVICE_TABLE(spi, ads1220_id);
+
+
+
+Conor Dooley <conor@kernel.org>
+Tệp đính kèm
+00:47 (12 giờ trước)
+đến tôi, Jonathan, linux-iio, devicetree, Rob, Krzysztof, Conor, David, Nuno, Andy, linux-kernel
+
+On Wed, Jun 10, 2026 at 10:13:41PM +0700, Nguyen Minh Tien wrote:
+
+> +      diff-channels:
+> +        description:
+> +          Differential input pair routable by the ADS1220 multiplexer.
+> +        oneOf:
+> +          - items: [const: 0, const: 1]
+> +          - items: [const: 0, const: 2]
+> +          - items: [const: 0, const: 3]
+> +          - items: [const: 1, const: 2]
+> +          - items: [const: 1, const: 3]
+> +          - items: [const: 2, const: 3]
+> +          - items: [const: 1, const: 0]
+> +          - items: [const: 3, const: 2]
+
+Maybe this is a silly question, but what is the difference between 3,2
+and 2,3? Which pin is considered the positive value?
+
+
+
+Conor Dooley <conor@kernel.org>
+Tệp đính kèm
+01:01 (11 giờ trước)
+đến sashiko-reviews, tôi, robh, conor+dt, devicetree
+
+On Wed, Jun 10, 2026 at 03:29:02PM +0000, sashiko-bot@kernel.org wrote:
+> Thank you for your contribution! Sashiko AI review found 2 potential issue(s) to consider:
+> - [High] The `diff-channels` property constraint uses invalid YAML flow sequence syntax (`items: [const: 0, const: 1]`) that will cause a fatal parser error or evaluate to a single-element list with a collapsed duplicate dictionary key.
+> - [Medium] The child node regex and `reg` maximum artificially limit the device tree to defining at most 7 channels, despite the hardware supporting 12 unique multiplexer configurations.
+> --
+>
+> commit 2b3665a0096105a4bb2db6266e47dec0a0802cff
+> Author: Nguyen Minh Tien <zizuzacker@gmail.com>
+>
+> dt-bindings: iio: adc: Add TI ADS1220
+>
+> This commit adds a device tree binding for the TI ADS1220 24-bit ADC.
+> It describes the SPI device, its per-input channel child nodes,
+> external reference selection, and the DRDY interrupt.
+>
+> > diff --git a/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml b/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+> > new file mode 100644
+> > index 0000000000000..1fedffc2a1475
+> > --- /dev/null
+> > +++ b/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+> [ ... ]
+> > +patternProperties:
+> > +  "^channel@[0-6]$":
+> > +    $ref: adc.yaml
+> > +    type: object
+> > +    description: Represents one ADC input configuration (channel).
+> > +
+> > +    properties:
+> > +      reg:
+> > +        minimum: 0
+> > +        maximum: 6
+>
+> [Severity: Medium]
+> The ADS1220 hardware supports 12 unique multiplexer combinations
+> (8 differential pairs and 4 single-ended inputs). Does this regex and
+> reg maximum artificially limit the device tree to defining at most 7
+> channels?
+>
+> System integrators might not be able to represent all available
+> hardware configurations if this limit is enforced.
+>
+> [ ... ]
+> > +      diff-channels:
+> > +        description:
+> > +          Differential input pair routable by the ADS1220 multiplexer.
+> > +        oneOf:
+> > +          - items: [const: 0, const: 1]
+> > +          - items: [const: 0, const: 2]
+> > +          - items: [const: 0, const: 3]
+> > +          - items: [const: 1, const: 2]
+> > +          - items: [const: 1, const: 3]
+> > +          - items: [const: 2, const: 3]
+> > +          - items: [const: 1, const: 0]
+> > +          - items: [const: 3, const: 2]
+>
+> [Severity: High]
+> Will this syntax pass the dt_binding_check validation?
+>
+> In YAML, a flow sequence like [const: 0, const: 1] evaluates to a list
+> containing a single implicit mapping with duplicate keys. The dt-schema
+> toolchain utilizes a strict parser that typically fails on duplicate
+> dictionary keys.
+>
+> If it did parse, it would likely collapse the duplicate keys into a
+> single element, forcing the diff-channels array to have exactly one
+> element instead of the expected two.
+>
+> Would it be better to use a valid flow mapping sequence, such as
+> - items: [{const: 0}, {const: 1}]?
+
+dt_binding_check passes actually. Although this syntax has no other
+users in the tree. The only other diff-channel user I saw that applied
+as tight restrictions as this one spelt it out as
+  items:
+    - const: 0
+    - const: 1
+etc but I have no objection to this if it works.
+
+
+Andy Shevchenko <andriy.shevchenko@intel.com>
+23:00 Thứ 5, 11 thg 6 (13 giờ trước)
+đến tôi, Jonathan, linux-iio, devicetree, Rob, Krzysztof, Conor, David, Nuno, Andy, linux-kernel
+
+On Wed, Jun 10, 2026 at 10:13:42PM +0700, Nguyen Minh Tien wrote:
+> Add an IIO driver for the Texas Instruments ADS1220 24-bit delta-sigma
+> SPI ADC. The driver supports single-ended and differential voltage
+> channels described as device-tree child nodes, per-channel programmable
+> gain (exposed through scale) and data rate (exposed through sampling
+> frequency), the internal 2.048V reference, an external reference via a
+> regulator, or the analog supply (AVDD) as a ratiometric reference,
+> single-shot conversions and a DRDY-interrupt-driven triggered buffer.
+> Conversions are gated either on the DRDY interrupt or, when no interrupt
+> is wired, on a data-rate-derived delay. Runtime PM powers the device down
+> between conversions.
+
+...
+
++ array_size.h
+
+> +#include <linux/bitfield.h>
+
+> +#include <linux/bits.h>
+
+Instead you should use bitops.h due to sign_extend32() and other calls.
+
+> +#include <linux/completion.h>
+> +#include <linux/delay.h>
+> +#include <linux/err.h>
+> +#include <linux/interrupt.h>
+
+> +#include <linux/log2.h>
+
++ math.h // DIV_ROUND_UP()
+
+> +#include <linux/mod_devicetable.h>
+> +#include <linux/module.h>
+> +#include <linux/property.h>
+> +#include <linux/regulator/consumer.h>
+> +#include <linux/pm_runtime.h>
+> +#include <linux/spi/spi.h>
+
++ types.h // bool, uXX
+
+> +#include <linux/units.h>
+> +#include <linux/unaligned.h>
+
+...
+
+> +/* Worst-case single conversion: 20 SPS => 50 ms, plus margin. */
+> +#define ADS1220_CONV_TIMEOUT_MS      100
+> +#define ADS1220_CONV_MARGIN_US       2000
+
+2 * USEC_PER_MSEC (will need time.h to be included).
+
+...
+
+
+> +#define ADS1220_SUSPEND_DELAY_MS 2000
+
+2 * MSEC_PER_SEC respectively.
+
+...
+
+> +static int ads1220_write_reg(struct ads1220_state *st, u8 reg, u8 val)
+> +{
+> +     st->tx[0] = ADS1220_CMD_WREG_REG(reg);
+> +     st->tx[1] = val;
+> +
+> +     return spi_write(st->spi, st->tx, 2);
+
+sizeof(st->tx) ?
+
+> +}
+
+...
+
+> +static unsigned int ads1220_datarate_to_code(unsigned int datarate)
+
+unsigned? See below why.
+
+> +{
+> +     int i;
+> +
+> +     for (i = 0; i < ARRAY_SIZE(ads1220_datarates); i++)
+
+        for (unsigned int i = 0; i < ARRAY_SIZE(ads1220_datarates); i++)
+
+
+> +             if (ads1220_datarates[i] == datarate)
+> +                     return i;
+> +
+> +     return 0;
+
+This is wrong. It should return -ENOENT or so to be distinct with the 0 index.
+
+> +}
+
+...
+
+> +static int ads1220_read_sample(struct ads1220_state *st, unsigned int datarate,
+> +                            int *val)
+> +{
+> +     int ret;
+> +
+> +     if (st->spi->irq) {
+> +             unsigned long timeout = msecs_to_jiffies(ADS1220_CONV_TIMEOUT_MS);
+> +
+> +             if (!wait_for_completion_timeout(&st->completion, timeout))
+> +                     return -ETIMEDOUT;
+> +     } else {
+> +             /*
+> +              * No DRDY interrupt: wait for the conversion to finish. In
+> +              * single-shot mode the result stays latched until the next
+> +              * START, so waiting longer than one conversion is harmless;
+> +              * wait two periods plus a margin to comfortably cover the
+> +              * oscillator start-up and its tolerance.
+> +              */
+> +             fsleep(2 * DIV_ROUND_UP(MICRO, datarate) + ADS1220_CONV_MARGIN_US);
+
+USEC_PER_SEC instead of MICRO?
+
+> +     }
+> +
+> +     /*
+> +      * Once DRDY is low the result can be clocked out directly, MSB first,
+> +      * without an RDATA command (datasheet section 8.5.4).
+> +      */
+> +     ret = spi_read(st->spi, st->rx, ADS1220_DATA_BYTES);
+> +     if (ret)
+> +             return ret;
+> +
+> +     *val = sign_extend32(get_unaligned_be24(st->rx), ADS1220_DATA_BITS - 1);
+> +
+> +     return 0;
+> +}
+
+...
+
+> +static int ads1220_single_conversion(struct ads1220_state *st,
+> +                                  const struct iio_chan_spec *chan,
+> +                                  int *val, bool calib_offset)
+> +{
+> +     struct device *dev = &st->spi->dev;
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +     unsigned int mux = cfg->mux;
+> +     bool single_ended = cfg->single_ended;
+> +     int ret;
+> +
+> +     if (calib_offset) {
+> +             mux = ADS1220_MUX_SHORTED;
+> +             single_ended = false;
+> +     }
+> +
+> +     ret = pm_runtime_resume_and_get(dev);
+> +     if (ret)
+> +             return ret;
+
+Use PM_ACQUIRE_*() macros instead.
+
+
+> +     ret = ads1220_configure(st, mux, cfg->gain, cfg->datarate,
+> +                             single_ended, false);
+> +     if (ret)
+> +             goto out;
+> +
+> +     if (st->spi->irq)
+> +             reinit_completion(&st->completion);
+> +
+> +     ret = ads1220_command(st, ADS1220_CMD_START);
+> +     if (ret)
+> +             goto out;
+> +
+> +     ret = ads1220_read_sample(st, cfg->datarate, val);
+> +     if (ret)
+> +             goto out;
+> +
+> +     ret = IIO_VAL_INT;
+> +out:
+
+> +     pm_runtime_mark_last_busy(dev);
+
+Even without above this is not needed, it's implied by the below call.
+
+> +     pm_runtime_put_autosuspend(dev);
+> +
+> +     return ret;
+> +}
+
+...
+
+> +static int ads1220_write_raw(struct iio_dev *indio_dev,
+> +                          const struct iio_chan_spec *chan,
+> +                          int val, int val2, long mask)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +     unsigned int gain;
+
+
+> +     int i;
+
+Why signed? And why not to make it local to the loop?
+
+> +     switch (mask) {
+> +     case IIO_CHAN_INFO_SCALE:
+> +             /* The available scales are the gain reciprocals (e.g. 1/4). */
+> +             if (val == 0 && val2 == 0)
+> +                     return -EINVAL;
+> +
+> +             gain = MICRO / (val * MICRO + val2);
+> +             if (!is_power_of_2(gain) || gain > BIT(ADS1220_NUM_GAINS - 1))
+> +                     return -EINVAL;
+> +             if (cfg->single_ended && gain > ADS1220_MAX_SE_GAIN)
+> +                     return -EINVAL;
+> +
+> +             cfg->gain = gain;
+> +             return 0;
+> +     case IIO_CHAN_INFO_SAMP_FREQ:
+
+> +             for (i = 0; i < ARRAY_SIZE(ads1220_datarates); i++) {
+> +                     if (ads1220_datarates[i] == val) {
+> +                             cfg->datarate = val;
+> +                             return 0;
+> +                     }
+> +             }
+
+Can't ads1220_datarate_to_code() be used?
+
+> +             return -EINVAL;
+> +     default:
+> +             return -EINVAL;
+> +     }
+> +}
+
+...
+
+> +static int ads1220_debugfs_reg_access(struct iio_dev *indio_dev,
+> +                                   unsigned int reg, unsigned int writeval,
+> +                                   unsigned int *readval)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     u8 val;
+> +     int ret;
+
+> +     if (reg > ADS1220_MAX_REG)
+> +             return -EINVAL;
+
+How is this not a dead code? Forgot to set .max_register in regmap configuration?
+
+> +     if (readval) {
+> +             ret = ads1220_read_reg(st, reg, &val);
+> +             if (ret)
+> +                     return ret;
+> +             *readval = val;
+> +             return 0;
+> +     }
+> +
+> +     return ads1220_write_reg(st, reg, writeval);
+> +}
+
+...
+
+> +static int ads1220_buffer_preenable(struct iio_dev *indio_dev)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct device *dev = &st->spi->dev;
+> +     struct ads1220_channel_config *cfg;
+> +     unsigned int index;
+> +     int ret;
+> +
+> +     index = find_first_bit(indio_dev->active_scan_mask,
+> +                            iio_get_masklength(indio_dev));
+> +     cfg = &st->channels_cfg[index];
+
+> +     ret = pm_runtime_resume_and_get(dev);
+> +     if (ret)
+> +             return ret;
+
+> +     ret = ads1220_configure(st, cfg->mux, cfg->gain, cfg->datarate,
+> +                             cfg->single_ended, true);
+> +     if (ret)
+> +             goto err;
+> +
+> +     ret = ads1220_command(st, ADS1220_CMD_START);
+> +     if (ret)
+> +             goto err;
+> +
+> +     return 0;
+> +err:
+
+> +     pm_runtime_mark_last_busy(dev);
+
+Dup.
+
+> +     pm_runtime_put_autosuspend(dev);
+> +     return ret;
+> +}
+
+...
+
+> +static int ads1220_buffer_postdisable(struct iio_dev *indio_dev)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct device *dev = &st->spi->dev;
+
+> +     pm_runtime_mark_last_busy(dev);
+
+Dup.
+
+> +     pm_runtime_put_autosuspend(dev);
+> +
+> +     return 0;
+> +}
+
+...
+
+> +     static const u8 diff_mux[ADS1220_MAX_AIN][ADS1220_MAX_AIN] = {
+> +             [0][1] = 0x0, [0][2] = 0x1, [0][3] = 0x2,
+> +             [1][2] = 0x3, [1][3] = 0x4, [1][0] = 0x6,
+> +             [2][3] = 0x5,
+> +             [3][2] = 0x7,
+
+Please, fill all the gaps to make this look nice tabulator.
+Also you may drop the first _MAX_AIN, compiler will be able to get this.
+
+> +     };
+
+...
+
+> +     const struct iio_chan_spec ads1220_channel = {
+
+Why is this not static?
+
+> +             .type = IIO_VOLTAGE,
+> +             .indexed = 1,
+> +             .info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+> +                                   BIT(IIO_CHAN_INFO_SCALE) |
+> +                                   BIT(IIO_CHAN_INFO_OFFSET) |
+> +                                   BIT(IIO_CHAN_INFO_SAMP_FREQ),
+> +             .info_mask_separate_available = BIT(IIO_CHAN_INFO_SCALE) |
+> +                                             BIT(IIO_CHAN_INFO_SAMP_FREQ),
+> +             .scan_type = {
+> +                     .sign = 's',
+> +                     .realbits = ADS1220_DATA_BITS,
+> +                     .storagebits = 32,
+> +                     .endianness = IIO_CPU,
+> +             },
+> +     };
+
+...
+
+> +     unsigned int num_channels, i = 0;
+
+Split assignment and definition to avoid subtle mistakes in the future.
+Move the assignment closer to it's first user
+(device_for_each_child_node_scoped() loop AFAICS).
+
+> +     int ret;
+> +
+> +     st->num_channels_cfg = device_get_child_node_count(dev);
+> +     if (st->num_channels_cfg == 0 ||
+> +         st->num_channels_cfg > ADS1220_MAX_CHANNELS)
+
+in_range() ?
+
+> +             return dev_err_probe(dev, -EINVAL,
+> +                                  "Invalid channel count %u (max %u)\n",
+> +                                  st->num_channels_cfg, ADS1220_MAX_CHANNELS);
+
+> +     /* One extra channel for the timestamp. */
+> +     num_channels = st->num_channels_cfg + 1;
+
+> +     channels = devm_kcalloc(dev, num_channels, sizeof(*channels),
+> +                             GFP_KERNEL);
+
+I would leave it on a single line.
+
+> +     if (!channels)
+> +             return -ENOMEM;
+> +
+> +     device_for_each_child_node_scoped(dev, child) {
+> +             struct ads1220_channel_config *cfg = &st->channels_cfg[i];
+> +             bool differential;
+> +             u32 ain[2];
+> +
+> +             differential = fwnode_property_present(child, "diff-channels");
+> +             if (differential)
+> +                     ret = fwnode_property_read_u32_array(child,
+> +                                                          "diff-channels",
+> +                                                          ain, 2);
+
+ARRAY_SIZE()
+
+> +             else
+> +                     ret = fwnode_property_read_u32(child, "single-channel",
+> +                                                    &ain[0]);
+> +             if (ret)
+> +                     return dev_err_probe(dev, ret,
+> +                                          "Failed to read channel property\n");
+
+> +             ret = ads1220_map_mux(dev, ain[0], ain[1], differential,
+
+ain[1] may be uninitialised here. Why not supply the pointer to the array since
+you anyway supply 'differential'?
+
+> +                                   &cfg->mux, &cfg->single_ended);
+> +             if (ret)
+> +                     return dev_err_probe(dev, ret,
+> +                                          "Invalid input combination\n");
+> +
+> +             cfg->gain = 1;
+> +             cfg->datarate = ads1220_datarates[0];
+> +
+> +             chan = &channels[i];
+> +             *chan = ads1220_channel;
+> +             chan->channel = ain[0];
+> +             chan->address = i;
+> +             chan->scan_index = i;
+> +             if (differential) {
+> +                     chan->channel2 = ain[1];
+> +                     chan->differential = 1;
+> +             }
+> +
+> +             i++;
+> +     }
+
+...
+
+> +     st->vref_uV = devm_regulator_get_enable_read_voltage(dev, "vref");
+> +     if (st->vref_uV >= 0) {
+
+Does Vref == 0 make any sense?
+
+> +             st->vref_source = ADS1220_VREF_REFP0_REFN0;
+> +     } else if (st->vref_uV != -ENODEV) {
+> +             return dev_err_probe(dev, st->vref_uV, "Failed to get vref\n");
+> +     } else if (device_property_read_bool(dev, "ti,vref-avdd")) {
+> +             st->vref_source = ADS1220_VREF_AVDD;
+> +             st->vref_uV = avdd_uV;
+> +     } else {
+> +             st->vref_source = ADS1220_VREF_INTERNAL;
+> +             st->vref_uV = ADS1220_INTERNAL_VREF_uV;
+> +     }
+
+...
+
+> +     if (spi->irq > 0) {
+> +             ret = devm_request_irq(dev, spi->irq, ads1220_irq_handler,
+> +                                    IRQF_NO_THREAD, "ads1220", indio_dev);
+> +             if (ret)
+
+> +                     return dev_err_probe(dev, ret,
+> +                                          "Failed to request irq\n");
+
+No dup messages, just
+
+                        return ret;
+
+here.
+
+> +             st->trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
+> +                                               indio_dev->name,
+> +                                               iio_device_id(indio_dev));
+> +             if (!st->trig)
+> +                     return -ENOMEM;
+> +
+> +             st->trig->ops = &ads1220_trigger_ops;
+> +             iio_trigger_set_drvdata(st->trig, indio_dev);
+> +
+> +             ret = devm_iio_trigger_register(dev, st->trig);
+> +             if (ret)
+> +                     return dev_err_probe(dev, ret,
+> +                                          "Failed to register trigger\n");
+> +     }
+
+...
+
+> +static const struct spi_device_id ads1220_id[] = {
+> +     { "ads1220" },
+
+Use C99 initialisers.
+
+> +     { }
+> +};
+
+--
+With Best Regards,
+Andy Shevchenko

@@ -1,0 +1,31 @@
+Reply to: Jonathan Cameron, Re: [PATCH 1/2] dt-bindings: iio: adc: Add TI ADS1220
+(reply inline below his quoted text, plain text, no top-posting)
+
+> There are some interesting complex corners on this device - such as the RTD
+> configurations (current outputs on what would otherwise be input channels).
+> It might be worth looking at some of the other RTD supporting sensors
+> in tree and how their bindings are done.
+
+Thanks for the pointer. I looked at how adi,ad4130 and adi,ad4170-4
+model this (per-channel adi,excitation-current-*-microamp properties
+plus pin routing); the ADS1220's IDAC1/IDAC2 routing would map onto the
+same shape, and the low-side bridge switch could be a boolean. I have
+kept these out of scope for v2 to keep the initial driver reviewable -
+nothing in the current binding prevents adding them compatibly later.
+Happy to extend the binding now instead if you prefer it complete up
+front.
+
+> Ideally put a datasheet reference in this description.
+
+Done in v2.
+
+> Why 6?  Is the idea that you might have both differential and single ended
+> inputs from the same physical wires, or overlapping differential
+> pairs? In practice that rarely reflects how boards are wired.
+> However I can't immediately figure out a combination that ends up with 7 channels.
+
+You are right, the 7 was an oversight - there is no combination that
+gives exactly 7. The multiplexer supports 12 input configurations
+(4 single-ended + 8 differential pairs), so v2 raises the channel@
+pattern and reg maximum to 0..11. The overlapping-pairs case (e.g.
+AIN0-AIN1 and AIN1-AIN2) is indeed why the count can exceed 4.

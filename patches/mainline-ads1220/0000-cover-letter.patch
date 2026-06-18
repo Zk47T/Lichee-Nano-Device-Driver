@@ -1,0 +1,53 @@
+From 34043fa5b6bc0bd0f569d78cb3e6e3b0f739e44b Mon Sep 17 00:00:00 2001
+From: Nguyen Minh Tien <zizuzacker@gmail.com>
+Date: Wed, 10 Jun 2026 21:54:04 +0700
+Subject: [PATCH 0/2] iio: adc: Add Texas Instruments ADS1220 ADC
+
+This series adds support for the Texas Instruments ADS1220, a 24-bit,
+2-kSPS, 4-channel delta-sigma ADC with an SPI (mode 1) interface, a
+programmable gain amplifier (1 to 128), an internal 2.048V reference and
+a dedicated DRDY data-ready output.
+
+The driver supports:
+ - single-ended and differential voltage channels described as
+   device-tree child nodes;
+ - per-channel programmable gain (via _scale) and data rate (via
+   _sampling_frequency), with the matching *_available attributes;
+ - the internal 2.048V reference, an external reference on REFP0/REFN0
+   via a regulator, or the analog supply (AVDD) as a ratiometric
+   reference for single-supply measurements;
+ - single-shot conversions gated on the DRDY interrupt, or on a
+   data-rate-derived delay when no interrupt is wired;
+ - a DRDY-interrupt-driven triggered buffer for streaming;
+ - runtime PM (power-down between conversions).
+
+I tested this on a Lichee Pi Nano (Allwinner F1C100s) running Linux 7.0:
+with a potentiometer on AIN0 (single-ended against AVSS, AVDD as the
+reference), in_voltage0_raw tracks the wiper linearly across the full
+0..3.3V range (0 to 0x7fffff). Nothing in the driver is board-specific -
+it only uses the SPI and IIO frameworks - so it should work on any SPI
+host.
+
+This is my first kernel contribution. I modelled the driver on the
+existing TI ADS-family IIO drivers - ti-ads1119 for the structure and
+ti-ads124s08 for the SPI side - so I'd welcome any feedback on things
+I've missed.
+
+Nguyen Minh Tien (2):
+  dt-bindings: iio: adc: Add TI ADS1220
+  iio: adc: Add TI ADS1220 driver
+
+ .../bindings/iio/adc/ti,ads1220.yaml          | 146 +++
+ MAINTAINERS                                   |   7 +
+ drivers/iio/adc/Kconfig                       |  12 +
+ drivers/iio/adc/Makefile                      |   1 +
+ drivers/iio/adc/ti-ads1220.c                  | 835 ++++++++++++++++++
+ 5 files changed, 1001 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+ create mode 100644 drivers/iio/adc/ti-ads1220.c
+
+
+base-commit: ae696dfa47c30016cd429b9db5e70b259b8f509e
+-- 
+2.34.1
+

@@ -135,6 +135,12 @@ CONFIG_KEYBOARD_GPIO=y
 # SPI userspace test interface
 CONFIG_SPI_SPIDEV=y
 
+# ADS1220 24-bit SPI ADC (IIO) + triggered buffer for DRDY streaming
+CONFIG_IIO=y
+CONFIG_IIO_BUFFER=y
+CONFIG_IIO_TRIGGERED_BUFFER=y
+CONFIG_TI_ADS1220=m
+
 # Networking — cần cho udevd (netlink socket) và các userspace tools
 CONFIG_NET=y
 CONFIG_UNIX=y

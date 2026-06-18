@@ -1,0 +1,72 @@
+From b4cbbd11e99966e0c1d5d4051fe6c945fff4a3ca Mon Sep 17 00:00:00 2001
+From: Nguyen Minh Tien <zizuzacker@gmail.com>
+Date: Fri, 12 Jun 2026 13:23:17 +0700
+Subject: [PATCH v2 0/2] iio: adc: Add Texas Instruments ADS1220 ADC
+
+This series adds support for the Texas Instruments ADS1220, a 24-bit,
+2-kSPS, 4-channel delta-sigma ADC with an SPI (mode 1) interface, a
+programmable gain amplifier (1 to 128), an internal 2.048V reference and
+a dedicated DRDY data-ready output.
+
+Datasheet: https://www.ti.com/lit/gpn/ads1220
+
+Answering Andy's question on why a new driver: no existing driver covers
+this register map. The closest in-tree relatives are ti-ads1119 (similar
+command set concept, but I2C, 16-bit and a single configuration
+register) and ti-ads124s08 (SPI, but a different register map, command
+set and mux layout), so neither can be extended to this chip without
+effectively containing a second driver. The ADS1220's own family (e.g.
+the 16-bit ADS1120) shares this register map and could be supported by
+this driver later through chip_info data.
+
+The driver supports:
+ - single-ended and differential voltage channels described as
+   device-tree child nodes;
+ - per-channel programmable gain (via _scale) and data rate (via
+   _sampling_frequency), with the matching *_available attributes;
+ - the internal 2.048V reference, an external reference on REFP0/REFN0
+   via a regulator, or the analog supply (AVDD) as a ratiometric
+   reference for single-supply measurements;
+ - single-shot conversions gated on the DRDY interrupt, or on a
+   data-rate-derived delay when no interrupt is wired;
+ - a DRDY-interrupt-driven triggered buffer for streaming;
+ - runtime PM (power-down between conversions).
+
+I tested this on a Lichee Pi Nano (Allwinner F1C100s): with a
+potentiometer on AIN0 (single-ended against AVSS, AVDD as the
+reference), in_voltage0_raw tracks the wiper linearly across the full
+0..3.3V range (0 to 0x7fffff). Nothing in the driver is board-specific -
+it only uses the SPI and IIO frameworks - so it should work on any SPI
+host.
+
+On Jonathan's point about the RTD/bridge features (excitation current
+sources, the AIN3/AVSS low-side bypass switch): I have kept them out of
+scope for now to keep the initial driver reviewable, and nothing in the
+binding prevents adding them compatibly later - I would model them on
+the per-channel adi,excitation-current-* properties used by
+adi,ad4130/adi,ad4170-4. Happy to extend the binding now instead if
+that is preferred.
+
+Thanks to everyone for the detailed v1 review. The per-patch changes are
+listed below each patch's --- line.
+
+v1: https://lore.kernel.org/r/20260610151342.44274-1-zizuzacker@gmail.com
+
+Nguyen Minh Tien (2):
+  dt-bindings: iio: adc: Add TI ADS1220
+  iio: adc: Add TI ADS1220 driver
+
+ .../bindings/iio/adc/ti,ads1220.yaml          | 175 ++++
+ MAINTAINERS                                   |   7 +
+ drivers/iio/adc/Kconfig                       |  12 +
+ drivers/iio/adc/Makefile                      |   1 +
+ drivers/iio/adc/ti-ads1220.c                  | 875 ++++++++++++++++++
+ 5 files changed, 1070 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+ create mode 100644 drivers/iio/adc/ti-ads1220.c
+
+
+base-commit: ae696dfa47c30016cd429b9db5e70b259b8f509e
+-- 
+2.34.1
+

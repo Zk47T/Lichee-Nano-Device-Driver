@@ -1,0 +1,72 @@
+Reply to: Andy Shevchenko, Re: [PATCH 2/2] iio: adc: Add TI ADS1220 driver
+(reply inline below his quoted text, plain text, no top-posting)
+
+[includes: array_size.h, bitops.h instead of bits.h, math.h, types.h]
+
+All done in v2 (plus cleanup.h, minmax.h and time.h for the new users
+below).
+
+[2 * USEC_PER_MSEC / 2 * MSEC_PER_SEC / USEC_PER_SEC instead of MICRO]
+
+Done in v2.
+
+[write_reg: sizeof(st->tx)?]
+
+The register write now uses an on-stack buffer with sizeof(buf) through
+spi_write_then_read(), per Jonathan's suggestion to drop the DMA-safe
+buffers entirely.
+
+[ads1220_datarate_to_code() returning 0 on no match]
+
+You are right; it returns -ENOENT in v2 and is also used for the data
+rate validation in write_raw() instead of the open-coded loop. The loop
+variable is an unsigned int declared in the loop.
+
+[PM_ACQUIRE_*() macros]
+
+v2 uses PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND() +
+PM_RUNTIME_ACQUIRE_ERR() in the single-conversion path, which also
+removes the goto-based unwind there. The buffer path keeps explicit
+pm_runtime_resume_and_get()/put because the reference is taken in
+preenable and only released in postdisable, so a scoped guard cannot
+cover it.
+
+[pm_runtime_mark_last_busy() duplicates]
+
+All dropped in v2.
+
+[debugfs: dead code / .max_register in regmap?]
+
+There is no regmap here - the ADS1220's register access is embedded in
+its command byte, so the driver talks SPI directly. The IIO debugfs
+hook passes the user-supplied address through unchecked, so this range
+check is the only validation; it is not dead code.
+
+[diff_mux: fill the gaps, drop the first dimension]
+
+Done in v2: the table is fully populated with U8_MAX marking the pairs
+the multiplexer cannot route (also Jonathan's suggestion), the first
+dimension is dropped, and ads1220_map_mux() now takes the ain[] array
+so the negative input can no longer be read uninitialised.
+
+[static channel template / mixed declarations / in_range() /
+ ARRAY_SIZE() / single-line kcalloc]
+
+The template is gone entirely in v2 - the channel is built with a
+designated initializer in the loop as Jonathan suggested, which also
+removes the field fixups. The remaining declarations are split from
+assignments, the channel-count check uses in_range(), the array read
+uses ARRAY_SIZE() and the kcalloc call is on one line.
+
+[Does Vref == 0 make any sense?]
+
+No - v2 rejects a 0V reading for both vref and avdd-as-reference with
+-EINVAL instead of carrying a zero into the scale computation.
+
+[devm_request_irq: no dup messages]
+
+Done, plain return ret in v2.
+
+[spi_device_id C99 initialiser]
+
+Done in v2.

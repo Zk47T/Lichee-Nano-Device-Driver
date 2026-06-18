@@ -1,0 +1,26 @@
+Reply to: David Lechner, Re: [PATCH 1/2] dt-bindings: iio: adc: Add TI ADS1220
+(reply-all on David's message; plain text; inline below his quoted text)
+
+Hi David,
+
+> It could be similar enough that you could add this chip to what I am
+> doing rather than having separate files.
+
+That sounds great to me. I'll wait for your ADS122C14 series and follow
+how you structure the binding and driver - if the ADS1220 fits, I'd much
+rather add it on top of your work than carry a separate driver and
+binding.
+
+I'm fairly busy at the moment, so I won't be respinning this series
+straight away. The driver does get the ADC working on my hardware and I
+thought that was good enough, but the reviews have shown there is quite a
+lot still to improve. Since this is my first contribution, I think
+building on top of your ADS122C14 is a better path than pushing a
+separate v2 now.
+
+Thanks a lot to you and everyone else for taking the time to review -
+I've learned a great deal from it, and I'll come back to the ADS1220
+once your series is out.
+
+Thanks,
+Tien

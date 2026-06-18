@@ -1,0 +1,72 @@
+diff --git a/arch/arm/boot/dts/allwinner/suniv-f1c100s-licheepi-nano.dts b/arch/arm/boot/dts/allwinner/suniv-f1c100s-licheepi-nano.dts
+index 472ded0aafcf..11ecd98f1159 100644
+--- a/arch/arm/boot/dts/allwinner/suniv-f1c100s-licheepi-nano.dts
++++ b/arch/arm/boot/dts/allwinner/suniv-f1c100s-licheepi-nano.dts
+@@ -7,6 +7,7 @@
+ #include "suniv-f1c100s.dtsi"
+ 
+ #include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/interrupt-controller/irq.h>
+ 
+ / {
+ 	model = "Lichee Pi Nano";
+@@ -52,6 +53,59 @@ flash@0 {
+ 	};
+ };
+ 
++/*
++ * The ADS1220 ADC breakout is wired to the pin-header SPI bus, which on the
++ * Lichee Pi Nano is SPI1 on bank PA (board silkscreen A0..A3 = CS, SI, CK, SO):
++ *   PA0 = SPI1 CS0, PA1 = MOSI/DIN, PA2 = CLK/SCLK, PA3 = MISO/DOUT.
++ */
++&pio {
++	spi1_pa_pins: spi1-pa-pins {
++		pins = "PA0", "PA1", "PA2", "PA3";
++		function = "spi1";
++	};
++};
++
++&spi1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi1_pa_pins>;
++	status = "okay";
++
++	adc@0 {
++		compatible = "ti,ads1220";
++		reg = <0>;
++		spi-max-frequency = <2500000>;
++		spi-cpha;			/* SPI mode 1 (CPOL=0, CPHA=1) */
++		avdd-supply = <&reg_vcc3v3>;
++		dvdd-supply = <&reg_vcc3v3>;
++
++		/*
++		 * Use AVDD (3.3V) as the reference so a 0..3.3V potentiometer
++		 * maps to the full ADC range. Drop this to fall back to the
++		 * internal 2.048V reference (then inputs above 2.048V overrange).
++		 */
++		ti,vref-avdd;
++
++		/*
++		 * DRDY (data-ready) is optional. Wire it to a spare GPIO and
++		 * uncomment the two lines below (PE4 shown) for interrupt-driven
++		 * reads and DRDY-triggered streaming. Without it, the driver
++		 * waits one conversion period per sample - fine for the
++		 * single-shot potentiometer demo.
++		 */
++		/* interrupt-parent = <&pio>; */
++		/* interrupts = <4 4 IRQ_TYPE_EDGE_FALLING>; */	/* DRDY on PE4 */
++
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		/* Potentiometer wiper on AIN0, measured against AVSS. */
++		channel@0 {
++			reg = <0>;
++			single-channel = <0>;
++		};
++	};
++};
++
+ &otg_sram {
+ 	status = "okay";
+ };

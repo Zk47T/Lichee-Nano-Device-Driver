@@ -1,0 +1,11 @@
+KDIR         := ../../linux
+ARCH         := arm
+CROSS_COMPILE := arm-linux-gnueabi-
+
+obj-m := btn_led.o
+
+all:
+	$(MAKE) -C $(KDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) modules
+
+clean:
+	$(MAKE) -C $(KDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) clean

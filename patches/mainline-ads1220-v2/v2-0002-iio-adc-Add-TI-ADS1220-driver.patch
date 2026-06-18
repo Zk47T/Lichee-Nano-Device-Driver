@@ -1,0 +1,1018 @@
+From b4cbbd11e99966e0c1d5d4051fe6c945fff4a3ca Mon Sep 17 00:00:00 2001
+From: Nguyen Minh Tien <zizuzacker@gmail.com>
+Date: Fri, 12 Jun 2026 13:22:08 +0700
+Subject: [PATCH v2 2/2] iio: adc: Add TI ADS1220 driver
+
+Add an IIO driver for the Texas Instruments ADS1220 24-bit delta-sigma
+SPI ADC. The driver supports single-ended and differential voltage
+channels described as device-tree child nodes, per-channel programmable
+gain (exposed through scale) and data rate (exposed through sampling
+frequency), the internal 2.048V reference, an external reference via a
+regulator, or the analog supply (AVDD) as a ratiometric reference,
+single-shot conversions and a DRDY-interrupt-driven triggered buffer.
+Conversions are gated either on the DRDY interrupt or, when no interrupt
+is wired, on a data-rate-derived delay. Runtime PM powers the device down
+between conversions.
+
+Signed-off-by: Nguyen Minh Tien <zizuzacker@gmail.com>
+---
+Changes in v2:
+ - Rework scale handling: compute the available scales from the
+   reference voltage at probe time as IIO_VAL_INT_PLUS_NANO values, and
+   use the same table in read_raw, write_raw and read_avail, so reading
+   the scale and writing the same value back round-trips. This also
+   removes the division by a user-supplied value entirely (Jonathan,
+   Sashiko).
+ - Negate the shorted-input reading returned for IIO_CHAN_INFO_OFFSET
+   to match the (raw + offset) * scale convention, and add comments
+   referencing the datasheet's offset calibration section (Jonathan,
+   Sashiko).
+ - Use spi_write_then_read() with stack buffers for all transfers and
+   drop the DMA-safe buffers from the state struct (Jonathan).
+ - Add .validate_trigger = iio_validate_own_trigger: results may only
+   be clocked out after DRDY and there is no other data-ready status to
+   poll, so foreign triggers cannot be supported (Jonathan's question,
+   Sashiko).
+ - Use the PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND() guard in the
+   single conversion path; the buffer path keeps explicit get/put since
+   the reference is released in postdisable (Andy).
+ - Send POWERDOWN in buffer postdisable so continuous mode does not
+   keep running (and asserting DRDY) after the buffer is disabled,
+   also with CONFIG_PM disabled (Sashiko).
+ - Claim direct mode in write_raw so gain/data rate cannot change
+   under an active buffer (Sashiko).
+ - Only read the AVDD regulator voltage when AVDD is actually used as
+   the reference; otherwise just enable it, so probing still works
+   where the voltage cannot be read (Jonathan, Sashiko). Reject 0V
+   readings from vref/avdd (Andy).
+ - ads1220_datarate_to_code() returns -ENOENT for unknown rates and is
+   reused for the data rate validation in write_raw (Andy).
+ - Include what is used: array_size.h, bitops.h instead of bits.h,
+   cleanup.h, math.h, minmax.h, time.h, types.h; use the
+   USEC_PER_SEC/USEC_PER_MSEC/MSEC_PER_SEC constants for time values
+   (Andy).
+ - Drop pm_runtime_mark_last_busy() calls, now done by
+   pm_runtime_put_autosuspend() itself (Jonathan, Andy).
+ - Drop the runtime resume callback: register contents and the serial
+   interface survive power-down and START/SYNC wakes the device
+   (Jonathan).
+ - Explain the post-RESET delay in terms of the 4.096MHz tCLK
+   (Jonathan).
+ - Fill the differential mux table completely with U8_MAX markers for
+   the pairs the multiplexer cannot route, drop its first array
+   dimension, and pass the input array to ads1220_map_mux() (Jonathan,
+   Andy).
+ - Use designated initializers for the channel spec, assign
+   IIO_CHAN_SOFT_TIMESTAMP() directly, split declarations from
+   assignments and use in_range() and ARRAY_SIZE() (Jonathan, Andy).
+ - Use unsigned loop variables declared in the loops (Andy).
+ - Drop the redundant bits_per_word = 8 assignment (Jonathan).
+ - Drop the duplicate error message when requesting the IRQ fails
+   (Andy).
+ - Use a .name initializer in the spi_device_id table (Jonathan, Andy).
+ - Comment why debugfs register access needs no runtime PM resume: the
+   serial interface and registers stay functional in power-down. There
+   is no regmap here, so the register range check is the validation of
+   the user-supplied address (Sashiko, Andy's regmap question).
+ - Raise the channel count limit from 7 to 12 to match the binding.
+ - Add the driver F: line to the MAINTAINERS entry from patch 1
+   (Jonathan).
+
+ MAINTAINERS                  |   1 +
+ drivers/iio/adc/Kconfig      |  12 +
+ drivers/iio/adc/Makefile     |   1 +
+ drivers/iio/adc/ti-ads1220.c | 875 +++++++++++++++++++++++++++++++++++
+ 4 files changed, 889 insertions(+)
+ create mode 100644 drivers/iio/adc/ti-ads1220.c
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index a58c354d50..d58f36280f 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -26673,6 +26673,7 @@ M:	Nguyen Minh Tien <zizuzacker@gmail.com>
+ L:	linux-iio@vger.kernel.org
+ S:	Maintained
+ F:	Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
++F:	drivers/iio/adc/ti-ads1220.c
+ 
+ TI ADS7924 ADC DRIVER
+ M:	Hugo Villeneuve <hvilleneuve@dimonoff.com>
+diff --git a/drivers/iio/adc/Kconfig b/drivers/iio/adc/Kconfig
+index a3a93a47b4..cb17a89f02 100644
+--- a/drivers/iio/adc/Kconfig
++++ b/drivers/iio/adc/Kconfig
+@@ -1784,6 +1784,18 @@ config TI_ADS1119
+          This driver can also be built as a module. If so, the module will be
+          called ti-ads1119.
+ 
++config TI_ADS1220
++	tristate "Texas Instruments ADS1220 ADC"
++	depends on SPI
++	select IIO_BUFFER
++	select IIO_TRIGGERED_BUFFER
++	help
++	  If you say yes here you get support for Texas Instruments ADS1220
++	  24-bit, 4-channel, delta-sigma ADC chip.
++
++	  This driver can also be built as a module. If so, the module will be
++	  called ti-ads1220.
++
+ config TI_ADS124S08
+ 	tristate "Texas Instruments ADS124S08"
+ 	depends on SPI
+diff --git a/drivers/iio/adc/Makefile b/drivers/iio/adc/Makefile
+index 707dd70891..076cd51edc 100644
+--- a/drivers/iio/adc/Makefile
++++ b/drivers/iio/adc/Makefile
+@@ -153,6 +153,7 @@ obj-$(CONFIG_TI_ADS1015) += ti-ads1015.o
+ obj-$(CONFIG_TI_ADS1018) += ti-ads1018.o
+ obj-$(CONFIG_TI_ADS1100) += ti-ads1100.o
+ obj-$(CONFIG_TI_ADS1119) += ti-ads1119.o
++obj-$(CONFIG_TI_ADS1220) += ti-ads1220.o
+ obj-$(CONFIG_TI_ADS124S08) += ti-ads124s08.o
+ obj-$(CONFIG_TI_ADS1298) += ti-ads1298.o
+ obj-$(CONFIG_TI_ADS131E08) += ti-ads131e08.o
+diff --git a/drivers/iio/adc/ti-ads1220.c b/drivers/iio/adc/ti-ads1220.c
+new file mode 100644
+index 0000000000..e76a1307f1
+--- /dev/null
++++ b/drivers/iio/adc/ti-ads1220.c
+@@ -0,0 +1,875 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Texas Instruments ADS1220 ADC driver
++ *
++ * Datasheet: https://www.ti.com/lit/gpn/ads1220
++ *
++ * Copyright (C) 2026 Nguyen Minh Tien <zizuzacker@gmail.com>
++ */
++
++#include <linux/array_size.h>
++#include <linux/bitfield.h>
++#include <linux/bitops.h>
++#include <linux/cleanup.h>
++#include <linux/completion.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/limits.h>
++#include <linux/log2.h>
++#include <linux/math.h>
++#include <linux/math64.h>
++#include <linux/minmax.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/property.h>
++#include <linux/regulator/consumer.h>
++#include <linux/spi/spi.h>
++#include <linux/time.h>
++#include <linux/types.h>
++#include <linux/unaligned.h>
++#include <linux/units.h>
++
++#include <linux/iio/buffer.h>
++#include <linux/iio/iio.h>
++#include <linux/iio/trigger.h>
++#include <linux/iio/triggered_buffer.h>
++#include <linux/iio/trigger_consumer.h>
++
++/* SPI commands (Table 8-7) */
++#define ADS1220_CMD_RESET	0x06
++#define ADS1220_CMD_START	0x08
++#define ADS1220_CMD_POWERDOWN	0x02
++#define ADS1220_CMD_RDATA	0x10
++#define ADS1220_CMD_RREG	0x20
++#define ADS1220_CMD_WREG	0x40
++/* RREG/WREG operate on one register (nn = 0 => 1 byte) at address rr */
++#define ADS1220_CMD_RREG_REG(reg)	(ADS1220_CMD_RREG | ((reg) << 2))
++#define ADS1220_CMD_WREG_REG(reg)	(ADS1220_CMD_WREG | ((reg) << 2))
++
++/* Configuration registers (Table 8-8) */
++#define ADS1220_REG_CONFIG0	0x00
++#define ADS1220_REG_CONFIG1	0x01
++#define ADS1220_REG_CONFIG2	0x02
++#define ADS1220_REG_CONFIG3	0x03
++#define ADS1220_MAX_REG		ADS1220_REG_CONFIG3
++
++/* CONFIG0 */
++#define ADS1220_CFG0_MUX	GENMASK(7, 4)
++#define ADS1220_CFG0_GAIN	GENMASK(3, 1)
++#define ADS1220_CFG0_PGA_BYPASS	BIT(0)
++
++/* CONFIG1 */
++#define ADS1220_CFG1_DR		GENMASK(7, 5)
++#define ADS1220_CFG1_MODE	GENMASK(4, 3)
++#define ADS1220_CFG1_CM		BIT(2)
++#define ADS1220_CFG1_TS		BIT(1)
++#define ADS1220_CFG1_BCS	BIT(0)
++
++/* CONFIG2 */
++#define ADS1220_CFG2_VREF	GENMASK(7, 6)
++#define ADS1220_CFG2_FILTER	GENMASK(5, 4)
++#define ADS1220_CFG2_PSW	BIT(3)
++#define ADS1220_CFG2_IDAC	GENMASK(2, 0)
++
++/* CONFIG3 */
++#define ADS1220_CFG3_I1MUX	GENMASK(7, 5)
++#define ADS1220_CFG3_I2MUX	GENMASK(4, 2)
++#define ADS1220_CFG3_DRDYM	BIT(1)
++
++/* VREF[1:0] sources */
++#define ADS1220_VREF_INTERNAL	0
++#define ADS1220_VREF_REFP0_REFN0 1
++#define ADS1220_VREF_AIN0_AIN3	2
++#define ADS1220_VREF_AVDD	3
++#define ADS1220_INTERNAL_VREF_uV 2048000
++
++/* Input multiplexer codes (Table 8-10) */
++#define ADS1220_MUX_SINGLE(ain)	(0x8 | (ain))	/* AINx vs AVSS */
++#define ADS1220_MUX_SHORTED	0x0e		/* (AVDD + AVSS) / 2 */
++
++#define ADS1220_DATA_BYTES	3
++#define ADS1220_DATA_BITS	24
++
++#define ADS1220_NUM_GAINS	8	/* 1, 2, 4, 8, 16, 32, 64, 128 */
++#define ADS1220_NUM_SE_GAINS	3	/* single-ended forces PGA bypass */
++
++#define ADS1220_MAX_CHANNELS	12	/* 4 single-ended + 8 differential pairs */
++#define ADS1220_MAX_AIN		4
++
++/* Worst-case single conversion: 20 SPS => 50 ms, plus margin. */
++#define ADS1220_CONV_TIMEOUT_MS	100
++#define ADS1220_CONV_MARGIN_US	(2 * USEC_PER_MSEC)
++
++#define ADS1220_SUSPEND_DELAY_MS (2 * MSEC_PER_SEC)
++
++/* Data rate (samples per second) in normal mode, indexed by DR[2:0]. */
++static const int ads1220_datarates[] = {
++	20, 45, 90, 175, 330, 600, 1000,
++};
++
++struct ads1220_channel_config {
++	unsigned int mux;
++	unsigned int gain;
++	unsigned int datarate;
++	bool single_ended;
++};
++
++struct ads1220_state {
++	struct spi_device *spi;
++	struct completion completion;
++	struct iio_trigger *trig;
++	struct ads1220_channel_config *channels_cfg;
++	unsigned int num_channels_cfg;
++	int vref_uV;
++	unsigned int vref_source;
++
++	/*
++	 * Scale (in mV per LSB, as IIO_VAL_INT_PLUS_NANO pairs) for each PGA
++	 * gain, computed from the reference voltage at probe time. Channels
++	 * with single-ended inputs (which force the PGA into bypass) are
++	 * limited to the first ADS1220_NUM_SE_GAINS entries (gains 1, 2, 4).
++	 */
++	int scale_tbl[ADS1220_NUM_GAINS][2];
++
++	/* One sample plus a timestamp for the triggered buffer. */
++	struct {
++		s32 sample;
++		aligned_s64 timestamp;
++	} scan;
++};
++
++static int ads1220_command(struct ads1220_state *st, u8 cmd)
++{
++	return spi_write_then_read(st->spi, &cmd, 1, NULL, 0);
++}
++
++static int ads1220_write_reg(struct ads1220_state *st, u8 reg, u8 val)
++{
++	u8 buf[] = { ADS1220_CMD_WREG_REG(reg), val };
++
++	return spi_write_then_read(st->spi, buf, sizeof(buf), NULL, 0);
++}
++
++static int ads1220_read_reg(struct ads1220_state *st, u8 reg, u8 *val)
++{
++	u8 cmd = ADS1220_CMD_RREG_REG(reg);
++
++	return spi_write_then_read(st->spi, &cmd, 1, val, 1);
++}
++
++static int ads1220_reset(struct ads1220_state *st)
++{
++	int ret;
++
++	ret = ads1220_command(st, ADS1220_CMD_RESET);
++	if (ret)
++		return ret;
++
++	/*
++	 * Wait at least 50us + 32 x tCLK after a RESET command before sending
++	 * any other command (section 8.5.3). With the internal 4.096MHz
++	 * oscillator, 32 x tCLK is about 8us, so 58us minimum in total.
++	 */
++	fsleep(100);
++
++	return 0;
++}
++
++static int ads1220_datarate_to_code(unsigned int datarate)
++{
++	for (unsigned int i = 0; i < ARRAY_SIZE(ads1220_datarates); i++)
++		if (ads1220_datarates[i] == datarate)
++			return i;
++
++	return -ENOENT;
++}
++
++static int ads1220_configure(struct ads1220_state *st, unsigned int mux,
++			     unsigned int gain, unsigned int datarate,
++			     bool single_ended, bool continuous)
++{
++	u8 reg0, reg1;
++	int code, ret;
++
++	reg0 = FIELD_PREP(ADS1220_CFG0_MUX, mux) |
++	       FIELD_PREP(ADS1220_CFG0_GAIN, ilog2(gain));
++	/*
++	 * For single-ended inputs (AINN = AVSS) the PGA must be bypassed; the
++	 * datasheet only allows gains 1, 2 and 4 in that case.
++	 */
++	if (single_ended)
++		reg0 |= ADS1220_CFG0_PGA_BYPASS;
++
++	ret = ads1220_write_reg(st, ADS1220_REG_CONFIG0, reg0);
++	if (ret)
++		return ret;
++
++	code = ads1220_datarate_to_code(datarate);
++	if (code < 0)
++		return code;
++
++	reg1 = FIELD_PREP(ADS1220_CFG1_DR, code);
++	if (continuous)
++		reg1 |= ADS1220_CFG1_CM;
++
++	return ads1220_write_reg(st, ADS1220_REG_CONFIG1, reg1);
++}
++
++static int ads1220_read_sample(struct ads1220_state *st, unsigned int datarate,
++			       int *val)
++{
++	u8 buf[ADS1220_DATA_BYTES];
++	int ret;
++
++	if (st->spi->irq) {
++		unsigned long timeout = msecs_to_jiffies(ADS1220_CONV_TIMEOUT_MS);
++
++		if (!wait_for_completion_timeout(&st->completion, timeout))
++			return -ETIMEDOUT;
++	} else {
++		/*
++		 * No DRDY interrupt: wait for the conversion to finish. In
++		 * single-shot mode the result stays latched until the next
++		 * START, so waiting longer than one conversion is harmless;
++		 * wait two periods plus a margin to comfortably cover the
++		 * oscillator start-up and its tolerance.
++		 */
++		fsleep(2 * DIV_ROUND_UP(USEC_PER_SEC, datarate) +
++		       ADS1220_CONV_MARGIN_US);
++	}
++
++	/*
++	 * Once DRDY signalled the end of the conversion the result can be
++	 * clocked out directly, MSB first, without an RDATA command
++	 * (section 8.5.4).
++	 */
++	ret = spi_write_then_read(st->spi, NULL, 0, buf, ADS1220_DATA_BYTES);
++	if (ret)
++		return ret;
++
++	*val = sign_extend32(get_unaligned_be24(buf), ADS1220_DATA_BITS - 1);
++
++	return 0;
++}
++
++static int ads1220_single_conversion(struct ads1220_state *st,
++				     const struct iio_chan_spec *chan,
++				     int *val, bool calib_offset)
++{
++	struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
++	unsigned int mux = cfg->mux;
++	bool single_ended = cfg->single_ended;
++	int ret;
++
++	if (calib_offset) {
++		/*
++		 * Measure with both PGA inputs shorted to (AVDD + AVSS) / 2,
++		 * which the datasheet describes as the way to obtain the
++		 * device offset (section 8.3.12).
++		 */
++		mux = ADS1220_MUX_SHORTED;
++		single_ended = false;
++	}
++
++	PM_RUNTIME_ACQUIRE_IF_ENABLED_AUTOSUSPEND(&st->spi->dev, pm);
++	ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
++	if (ret)
++		return ret;
++
++	ret = ads1220_configure(st, mux, cfg->gain, cfg->datarate,
++				single_ended, false);
++	if (ret)
++		return ret;
++
++	if (st->spi->irq)
++		reinit_completion(&st->completion);
++
++	ret = ads1220_command(st, ADS1220_CMD_START);
++	if (ret)
++		return ret;
++
++	ret = ads1220_read_sample(st, cfg->datarate, val);
++	if (ret)
++		return ret;
++
++	return IIO_VAL_INT;
++}
++
++static int ads1220_read_raw(struct iio_dev *indio_dev,
++			    const struct iio_chan_spec *chan,
++			    int *val, int *val2, long mask)
++{
++	struct ads1220_state *st = iio_priv(indio_dev);
++	struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
++	int ret;
++
++	switch (mask) {
++	case IIO_CHAN_INFO_RAW:
++		if (!iio_device_claim_direct(indio_dev))
++			return -EBUSY;
++		ret = ads1220_single_conversion(st, chan, val, false);
++		iio_device_release_direct(indio_dev);
++		return ret;
++	case IIO_CHAN_INFO_OFFSET:
++		if (!iio_device_claim_direct(indio_dev))
++			return -EBUSY;
++		ret = ads1220_single_conversion(st, chan, val, true);
++		iio_device_release_direct(indio_dev);
++		if (ret < 0)
++			return ret;
++		/*
++		 * User space applies (raw + offset) * scale, so the offset
++		 * that cancels the measured reading for a 0V input is its
++		 * negation.
++		 */
++		*val = -*val;
++		return ret;
++	case IIO_CHAN_INFO_SCALE:
++		*val = st->scale_tbl[ilog2(cfg->gain)][0];
++		*val2 = st->scale_tbl[ilog2(cfg->gain)][1];
++		return IIO_VAL_INT_PLUS_NANO;
++	case IIO_CHAN_INFO_SAMP_FREQ:
++		*val = cfg->datarate;
++		return IIO_VAL_INT;
++	default:
++		return -EINVAL;
++	}
++}
++
++static int ads1220_read_avail(struct iio_dev *indio_dev,
++			      const struct iio_chan_spec *chan,
++			      const int **vals, int *type, int *length,
++			      long mask)
++{
++	struct ads1220_state *st = iio_priv(indio_dev);
++	struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
++
++	switch (mask) {
++	case IIO_CHAN_INFO_SCALE:
++		*type = IIO_VAL_INT_PLUS_NANO;
++		*vals = (const int *)st->scale_tbl;
++		*length = 2 * (cfg->single_ended ? ADS1220_NUM_SE_GAINS :
++						   ADS1220_NUM_GAINS);
++		return IIO_AVAIL_LIST;
++	case IIO_CHAN_INFO_SAMP_FREQ:
++		*type = IIO_VAL_INT;
++		*vals = ads1220_datarates;
++		*length = ARRAY_SIZE(ads1220_datarates);
++		return IIO_AVAIL_LIST;
++	default:
++		return -EINVAL;
++	}
++}
++
++static int ads1220_write_raw(struct iio_dev *indio_dev,
++			     const struct iio_chan_spec *chan,
++			     int val, int val2, long mask)
++{
++	struct ads1220_state *st = iio_priv(indio_dev);
++	struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
++	unsigned int num_gains;
++	int ret;
++
++	if (!iio_device_claim_direct(indio_dev))
++		return -EBUSY;
++
++	switch (mask) {
++	case IIO_CHAN_INFO_SCALE:
++		/* Match the requested scale against the precomputed table. */
++		num_gains = cfg->single_ended ? ADS1220_NUM_SE_GAINS :
++						ADS1220_NUM_GAINS;
++		ret = -EINVAL;
++		for (unsigned int i = 0; i < num_gains; i++) {
++			if (val == st->scale_tbl[i][0] &&
++			    val2 == st->scale_tbl[i][1]) {
++				cfg->gain = BIT(i);
++				ret = 0;
++				break;
++			}
++		}
++		break;
++	case IIO_CHAN_INFO_SAMP_FREQ:
++		ret = ads1220_datarate_to_code(val);
++		if (ret >= 0) {
++			cfg->datarate = val;
++			ret = 0;
++		}
++		break;
++	default:
++		ret = -EINVAL;
++		break;
++	}
++
++	iio_device_release_direct(indio_dev);
++
++	return ret;
++}
++
++static int ads1220_debugfs_reg_access(struct iio_dev *indio_dev,
++				      unsigned int reg, unsigned int writeval,
++				      unsigned int *readval)
++{
++	struct ads1220_state *st = iio_priv(indio_dev);
++	u8 val;
++	int ret;
++
++	if (reg > ADS1220_MAX_REG)
++		return -EINVAL;
++
++	/*
++	 * No runtime PM resume is needed here: the serial interface remains
++	 * functional and the configuration registers keep their contents in
++	 * power-down mode (section 8.4.3.4).
++	 */
++	if (readval) {
++		ret = ads1220_read_reg(st, reg, &val);
++		if (ret)
++			return ret;
++		*readval = val;
++		return 0;
++	}
++
++	return ads1220_write_reg(st, reg, writeval);
++}
++
++static const struct iio_info ads1220_info = {
++	.read_raw = ads1220_read_raw,
++	.read_avail = ads1220_read_avail,
++	.write_raw = ads1220_write_raw,
++	.debugfs_reg_access = ads1220_debugfs_reg_access,
++	/*
++	 * Conversion results may only be clocked out after DRDY signals
++	 * their availability; the device has no other data-ready status
++	 * indication, so triggers other than its own cannot be supported.
++	 */
++	.validate_trigger = iio_validate_own_trigger,
++};
++
++static int ads1220_buffer_preenable(struct iio_dev *indio_dev)
++{
++	struct ads1220_state *st = iio_priv(indio_dev);
++	struct device *dev = &st->spi->dev;
++	struct ads1220_channel_config *cfg;
++	unsigned int index;
++	int ret;
++
++	index = find_first_bit(indio_dev->active_scan_mask,
++			       iio_get_masklength(indio_dev));
++	cfg = &st->channels_cfg[index];
++
++	/* Released in postdisable, so a scoped guard cannot be used. */
++	ret = pm_runtime_resume_and_get(dev);
++	if (ret)
++		return ret;
++
++	ret = ads1220_configure(st, cfg->mux, cfg->gain, cfg->datarate,
++				cfg->single_ended, true);
++	if (ret)
++		goto err;
++
++	ret = ads1220_command(st, ADS1220_CMD_START);
++	if (ret)
++		goto err;
++
++	return 0;
++err:
++	pm_runtime_put_autosuspend(dev);
++	return ret;
++}
++
++static int ads1220_buffer_postdisable(struct iio_dev *indio_dev)
++{
++	struct ads1220_state *st = iio_priv(indio_dev);
++	struct device *dev = &st->spi->dev;
++	int ret;
++
++	/*
++	 * Continuous conversions do not stop on their own; enter power-down
++	 * mode (after the conversion in progress completes, section 8.4.3.4)
++	 * so that the device does not keep converting and asserting DRDY.
++	 * The next conversion request wakes it up again.
++	 */
++	ret = ads1220_command(st, ADS1220_CMD_POWERDOWN);
++
++	pm_runtime_put_autosuspend(dev);
++
++	return ret;
++}
++
++static const struct iio_buffer_setup_ops ads1220_buffer_setup_ops = {
++	.preenable = ads1220_buffer_preenable,
++	.postdisable = ads1220_buffer_postdisable,
++	.validate_scan_mask = &iio_validate_scan_mask_onehot,
++};
++
++static const struct iio_trigger_ops ads1220_trigger_ops = {
++	.validate_device = &iio_trigger_validate_own_device,
++};
++
++static irqreturn_t ads1220_irq_handler(int irq, void *dev_id)
++{
++	struct iio_dev *indio_dev = dev_id;
++	struct ads1220_state *st = iio_priv(indio_dev);
++
++	if (iio_buffer_enabled(indio_dev) && iio_trigger_using_own(indio_dev))
++		iio_trigger_poll(indio_dev->trig);
++	else
++		complete(&st->completion);
++
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t ads1220_trigger_handler(int irq, void *p)
++{
++	struct iio_poll_func *pf = p;
++	struct iio_dev *indio_dev = pf->indio_dev;
++	struct ads1220_state *st = iio_priv(indio_dev);
++	u8 buf[ADS1220_DATA_BYTES];
++	int ret;
++
++	ret = spi_write_then_read(st->spi, NULL, 0, buf, ADS1220_DATA_BYTES);
++	if (ret) {
++		dev_err(&st->spi->dev, "Failed to read sample: %d\n", ret);
++		goto done;
++	}
++
++	st->scan.sample = sign_extend32(get_unaligned_be24(buf),
++					ADS1220_DATA_BITS - 1);
++
++	iio_push_to_buffers_with_ts(indio_dev, &st->scan, sizeof(st->scan),
++				    iio_get_time_ns(indio_dev));
++done:
++	iio_trigger_notify_done(indio_dev->trig);
++
++	return IRQ_HANDLED;
++}
++
++static int ads1220_map_mux(const u32 *ain, bool differential,
++			   unsigned int *mux, bool *single_ended)
++{
++	/*
++	 * Differential MUX[3:0] codes indexed by [AINP][AINN] (Table 8-10).
++	 * Pairs the multiplexer cannot route are marked with U8_MAX.
++	 */
++	static const u8 diff_mux[][ADS1220_MAX_AIN] = {
++		/*       AIN0    AIN1    AIN2    AIN3   <- negative input */
++		[0] = { U8_MAX,    0x0,    0x1,    0x2 },
++		[1] = {    0x6, U8_MAX,    0x3,    0x4 },
++		[2] = { U8_MAX, U8_MAX, U8_MAX,    0x5 },
++		[3] = { U8_MAX, U8_MAX,    0x7, U8_MAX },
++	};
++
++	if (!differential) {
++		if (ain[0] >= ADS1220_MAX_AIN)
++			return -EINVAL;
++		*mux = ADS1220_MUX_SINGLE(ain[0]);
++		*single_ended = true;
++		return 0;
++	}
++
++	if (ain[0] >= ADS1220_MAX_AIN || ain[1] >= ADS1220_MAX_AIN ||
++	    diff_mux[ain[0]][ain[1]] == U8_MAX)
++		return -EINVAL;
++
++	*mux = diff_mux[ain[0]][ain[1]];
++	*single_ended = false;
++
++	return 0;
++}
++
++static int ads1220_alloc_channels(struct iio_dev *indio_dev)
++{
++	struct ads1220_state *st = iio_priv(indio_dev);
++	struct device *dev = &st->spi->dev;
++	struct iio_chan_spec *channels;
++	unsigned int num_channels;
++	unsigned int i;
++	int ret;
++
++	st->num_channels_cfg = device_get_child_node_count(dev);
++	if (!in_range(st->num_channels_cfg, 1, ADS1220_MAX_CHANNELS))
++		return dev_err_probe(dev, -EINVAL,
++				     "Invalid channel count %u (max %u)\n",
++				     st->num_channels_cfg, ADS1220_MAX_CHANNELS);
++
++	st->channels_cfg = devm_kcalloc(dev, st->num_channels_cfg,
++					sizeof(*st->channels_cfg), GFP_KERNEL);
++	if (!st->channels_cfg)
++		return -ENOMEM;
++
++	/* One extra channel for the timestamp. */
++	num_channels = st->num_channels_cfg + 1;
++	channels = devm_kcalloc(dev, num_channels, sizeof(*channels), GFP_KERNEL);
++	if (!channels)
++		return -ENOMEM;
++
++	i = 0;
++	device_for_each_child_node_scoped(dev, child) {
++		struct ads1220_channel_config *cfg = &st->channels_cfg[i];
++		bool differential;
++		u32 ain[2] = { };
++
++		differential = fwnode_property_present(child, "diff-channels");
++		if (differential)
++			ret = fwnode_property_read_u32_array(child,
++							     "diff-channels",
++							     ain,
++							     ARRAY_SIZE(ain));
++		else
++			ret = fwnode_property_read_u32(child, "single-channel",
++						       &ain[0]);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "Failed to read channel property\n");
++
++		ret = ads1220_map_mux(ain, differential, &cfg->mux,
++				      &cfg->single_ended);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "Invalid input combination\n");
++
++		cfg->gain = 1;
++		cfg->datarate = ads1220_datarates[0];
++
++		channels[i] = (struct iio_chan_spec) {
++			.type = IIO_VOLTAGE,
++			.indexed = 1,
++			.differential = differential,
++			.channel = ain[0],
++			.channel2 = ain[1],
++			.address = i,
++			.scan_index = i,
++			.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
++					      BIT(IIO_CHAN_INFO_SCALE) |
++					      BIT(IIO_CHAN_INFO_OFFSET) |
++					      BIT(IIO_CHAN_INFO_SAMP_FREQ),
++			.info_mask_separate_available =
++					      BIT(IIO_CHAN_INFO_SCALE) |
++					      BIT(IIO_CHAN_INFO_SAMP_FREQ),
++			.scan_type = {
++				.sign = 's',
++				.realbits = ADS1220_DATA_BITS,
++				.storagebits = 32,
++				.endianness = IIO_CPU,
++			},
++		};
++
++		i++;
++	}
++
++	channels[i] = IIO_CHAN_SOFT_TIMESTAMP(i);
++
++	indio_dev->channels = channels;
++	indio_dev->num_channels = num_channels;
++
++	return 0;
++}
++
++static void ads1220_fill_scale_tbl(struct ads1220_state *st)
++{
++	/* scale [mV] = vref [uV] / MILLI / (gain * 2^23) */
++	for (unsigned int i = 0; i < ADS1220_NUM_GAINS; i++) {
++		u64 scale;
++		u32 rem;
++
++		scale = div_u64((u64)st->vref_uV * (NANO / MILLI),
++				BIT_ULL(ADS1220_DATA_BITS - 1 + i));
++		st->scale_tbl[i][0] = div_u64_rem(scale, NANO, &rem);
++		st->scale_tbl[i][1] = rem;
++	}
++}
++
++static int ads1220_init(struct ads1220_state *st)
++{
++	u8 reg2;
++	int ret;
++
++	ret = ads1220_reset(st);
++	if (ret)
++		return ret;
++
++	reg2 = FIELD_PREP(ADS1220_CFG2_VREF, st->vref_source);
++
++	ret = ads1220_write_reg(st, ADS1220_REG_CONFIG2, reg2);
++	if (ret)
++		return ret;
++
++	/* DRDY only on the dedicated pin (DRDYM = 0). */
++	return ads1220_write_reg(st, ADS1220_REG_CONFIG3, 0);
++}
++
++static void ads1220_powerdown(void *data)
++{
++	struct ads1220_state *st = data;
++
++	ads1220_command(st, ADS1220_CMD_POWERDOWN);
++}
++
++static int ads1220_probe(struct spi_device *spi)
++{
++	struct device *dev = &spi->dev;
++	struct iio_dev *indio_dev;
++	struct ads1220_state *st;
++	int ret;
++
++	indio_dev = devm_iio_device_alloc(dev, sizeof(*st));
++	if (!indio_dev)
++		return -ENOMEM;
++
++	st = iio_priv(indio_dev);
++	st->spi = spi;
++	spi_set_drvdata(spi, indio_dev);
++
++	/* The ADS1220 uses SPI mode 1 (CPOL = 0, CPHA = 1). */
++	spi->mode |= SPI_CPHA;
++	ret = spi_setup(spi);
++	if (ret)
++		return dev_err_probe(dev, ret, "SPI setup failed\n");
++
++	indio_dev->name = "ads1220";
++	indio_dev->info = &ads1220_info;
++	indio_dev->modes = INDIO_DIRECT_MODE;
++
++	ret = devm_regulator_get_enable(dev, "dvdd");
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to enable dvdd\n");
++
++	/*
++	 * Reference source, in priority order:
++	 *  - external reference on REFP0/REFN0 if a "vref" regulator is given;
++	 *  - the analog supply (AVDD) for ratiometric single-supply setups if
++	 *    "ti,vref-avdd" is set - no extra pins, full 0..AVDD input range;
++	 *  - otherwise the internal 2.048V reference.
++	 * AVDD is always enabled, but its voltage is only read when it serves
++	 * as the reference, since regulators commonly cannot report one.
++	 */
++	st->vref_uV = devm_regulator_get_enable_read_voltage(dev, "vref");
++	if (st->vref_uV < 0 && st->vref_uV != -ENODEV)
++		return dev_err_probe(dev, st->vref_uV, "Failed to get vref\n");
++	if (st->vref_uV == 0)
++		return dev_err_probe(dev, -EINVAL, "Invalid 0V vref\n");
++
++	if (st->vref_uV > 0)
++		st->vref_source = ADS1220_VREF_REFP0_REFN0;
++	else if (device_property_read_bool(dev, "ti,vref-avdd"))
++		st->vref_source = ADS1220_VREF_AVDD;
++	else
++		st->vref_source = ADS1220_VREF_INTERNAL;
++
++	if (st->vref_source == ADS1220_VREF_AVDD) {
++		ret = devm_regulator_get_enable_read_voltage(dev, "avdd");
++		if (ret < 0)
++			return dev_err_probe(dev, ret,
++					     "Failed to get avdd voltage\n");
++		if (ret == 0)
++			return dev_err_probe(dev, -EINVAL, "Invalid 0V avdd\n");
++		st->vref_uV = ret;
++	} else {
++		ret = devm_regulator_get_enable(dev, "avdd");
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "Failed to enable avdd\n");
++		if (st->vref_source == ADS1220_VREF_INTERNAL)
++			st->vref_uV = ADS1220_INTERNAL_VREF_uV;
++	}
++
++	ads1220_fill_scale_tbl(st);
++
++	ret = ads1220_alloc_channels(indio_dev);
++	if (ret)
++		return ret;
++
++	init_completion(&st->completion);
++
++	ret = devm_iio_triggered_buffer_setup(dev, indio_dev, NULL,
++					      ads1220_trigger_handler,
++					      &ads1220_buffer_setup_ops);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "Failed to set up IIO buffer\n");
++
++	if (spi->irq > 0) {
++		ret = devm_request_irq(dev, spi->irq, ads1220_irq_handler,
++				       IRQF_NO_THREAD, "ads1220", indio_dev);
++		if (ret)
++			return ret;
++
++		st->trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
++						  indio_dev->name,
++						  iio_device_id(indio_dev));
++		if (!st->trig)
++			return -ENOMEM;
++
++		st->trig->ops = &ads1220_trigger_ops;
++		iio_trigger_set_drvdata(st->trig, indio_dev);
++
++		ret = devm_iio_trigger_register(dev, st->trig);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "Failed to register trigger\n");
++	}
++
++	ret = ads1220_init(st);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to initialize device\n");
++
++	pm_runtime_set_autosuspend_delay(dev, ADS1220_SUSPEND_DELAY_MS);
++	pm_runtime_use_autosuspend(dev);
++	pm_runtime_set_active(dev);
++
++	ret = devm_pm_runtime_enable(dev);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to enable pm runtime\n");
++
++	ret = devm_add_action_or_reset(dev, ads1220_powerdown, st);
++	if (ret)
++		return ret;
++
++	return devm_iio_device_register(dev, indio_dev);
++}
++
++static int ads1220_runtime_suspend(struct device *dev)
++{
++	struct iio_dev *indio_dev = dev_get_drvdata(dev);
++	struct ads1220_state *st = iio_priv(indio_dev);
++
++	return ads1220_command(st, ADS1220_CMD_POWERDOWN);
++}
++
++/*
++ * No runtime resume callback is needed: in power-down mode the device keeps
++ * its register contents and the serial interface functional, and the
++ * START/SYNC command sent by the conversion paths wakes it up again
++ * (section 8.4.3.4).
++ */
++static DEFINE_RUNTIME_DEV_PM_OPS(ads1220_pm_ops, ads1220_runtime_suspend,
++				 NULL, NULL);
++
++static const struct spi_device_id ads1220_id[] = {
++	{ .name = "ads1220" },
++	{ }
++};
++MODULE_DEVICE_TABLE(spi, ads1220_id);
++
++static const struct of_device_id ads1220_of_match[] = {
++	{ .compatible = "ti,ads1220" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ads1220_of_match);
++
++static struct spi_driver ads1220_driver = {
++	.driver = {
++		.name = "ads1220",
++		.of_match_table = ads1220_of_match,
++		.pm = pm_ptr(&ads1220_pm_ops),
++	},
++	.probe = ads1220_probe,
++	.id_table = ads1220_id,
++};
++module_spi_driver(ads1220_driver);
++
++MODULE_DESCRIPTION("Texas Instruments ADS1220 ADC Driver");
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Nguyen Minh Tien <zizuzacker@gmail.com>");
+-- 
+2.34.1
+

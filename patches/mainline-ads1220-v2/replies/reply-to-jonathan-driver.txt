@@ -1,0 +1,101 @@
+Reply to: Jonathan Cameron, Re: [PATCH 2/2] iio: adc: Add TI ADS1220 driver
+(reply inline below his quoted text, plain text, no top-posting)
+
+Key points to make inline at the matching quoted hunks:
+
+[MAINTAINERS]
+> Bring this in with the first file, so in the binding doc.
+> And add this line in this patch.
+
+Done in v2: the entry with the binding F: line is now added in patch 1
+and the driver F: line in patch 2.
+
+[scale_avail as gain reciprocals]
+> This doesn't feel right. I'd expect to see scaling including the reference voltage
+> so you'll have to compute the array at runtime.
+
+Agreed. v2 computes the available scales at probe time from the
+reference voltage as IIO_VAL_INT_PLUS_NANO values and uses that same
+table in read_raw, write_raw and read_avail, so a read-back value
+written to _scale round-trips to the same gain. This also removes the
+division by a user-controlled value that the bot flagged.
+
+[spi_write_then_read everywhere]
+> Given the buffers are small, you could use spi_write_then_read() with 0 sized
+> read to avoid need for DMA safe buffers.
+
+Done; the DMA-safe buffers are gone from the state struct and all
+transfers use stack buffers through spi_write_then_read().
+
+[reset delay]
+> Not obvious how this matches value of 100 to fsleep. Please provide
+> a little more info - such as what rate of tCLK is.
+
+Done: with the internal 4.096MHz oscillator, 32 x tCLK is ~8us, so the
+minimum is ~58us; the comment now spells this out.
+
+[offset comment + sign]
+> I think a comment on why this shorted channel is appropriate for offset
+> would be good (and sashiko thinks you have the sign wrong)
+
+The bot was right about the sign. Datasheet section 8.3.12 says the
+shorted-input reading is to be subtracted from subsequent readings,
+while IIO applies (raw + offset) * scale, so v2 negates the result and
+adds a comment citing that section.
+
+[pm_runtime_mark_last_busy]
+> Read current kernel implementation of pm_runtime_put_autosuspend()
+
+Indeed, it marks last busy itself now; the explicit calls are dropped
+in v2.
+
+[onehot]
+> ...is onehot suitable for this device? ... Fine to leave that until we have a user though!
+
+Agreed - with a single conversion path and mux this seems the natural
+fit for now; parallel reconfigure-while-converting could lift it later.
+
+[other triggers]
+> Just to check, can this device be used with other triggers?
+
+No - results may only be clocked out after DRDY falls (section 8.5.4)
+and the chip has no other data-ready status to poll (unlike e.g. the
+ADS1119's status register). v2 adds
+.validate_trigger = iio_validate_own_trigger with a comment.
+
+[diff_mux table]
+> Maybe it would be simpler to use MAX_U8 as a marker and fill the rest of the table
+
+Done with U8_MAX markers in v2.
+
+[designated initializers / IIO_CHAN_SOFT_TIMESTAMP / mixed declarations]
+Done as suggested in v2.
+
+[DRDYM binding note]
+> We might want something in the dt binding about the other case not making sense.
+
+Added to the interrupts description in v2: the dedicated DRDY pin must
+be used since DOUT/DRDY is also driven during SPI transfers.
+
+[bits_per_word]
+Dropped in v2.
+
+[avdd voltage]
+> you may want to only do this (rather than simply enabling it) if you need
+> it for a channel reference.
+
+Done: v2 only reads the AVDD voltage when ti,vref-avdd selects it as
+the reference; otherwise the supply is just enabled, so probing works
+on systems where the regulator voltage cannot be read.
+
+[runtime_resume wait]
+> This isn't manipulating the supplies so why do we need to wait for them?
+
+You are right, there is nothing to wait for: registers and the serial
+interface survive power-down and START/SYNC wakes the device, so v2
+drops the resume callback entirely.
+
+[spi_device_id]
+> Please use a name initializer here.
+
+Done in v2.

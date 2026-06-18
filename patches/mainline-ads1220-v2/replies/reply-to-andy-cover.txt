@@ -1,0 +1,21 @@
+Reply to: Andy Shevchenko, Re: [PATCH 0/2] iio: adc: Add Texas Instruments ADS1220 ADC
+(reply inline below his quoted text, plain text, no top-posting)
+
+> When adding a brand new driver, answer to the following questions:
+> - Why a new driver? Can any existed one cover these chips with some refactoring?
+
+No existing driver covers this register map. The closest in-tree
+relatives are ti-ads1119 (similar command set concept, but I2C, 16-bit,
+and a single configuration register) and ti-ads124s08 (SPI, but a
+different register map, command set and mux layout), so extending either
+would effectively embed a second driver. The ADS1220's direct siblings
+(e.g. the 16-bit ADS1120) do share this register map and can be added to
+this driver later through chip_info data.
+
+I have added this justification to the v2 cover letter.
+
+> - Where to find a datasheet (URL, other means)?
+
+https://www.ti.com/lit/gpn/ads1220 - it was referenced in the driver
+header; in v2 it is also in the binding description and the cover
+letter.

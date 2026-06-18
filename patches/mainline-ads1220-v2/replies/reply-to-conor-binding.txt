@@ -1,0 +1,23 @@
+Reply to: Conor Dooley, Re: [PATCH 1/2] dt-bindings: iio: adc: Add TI ADS1220
+(reply inline below his quoted text, plain text, no top-posting)
+
+> Maybe this is a silly question, but what is the difference between 3,2
+> and 2,3? Which pin is considered the positive value?
+
+Not silly at all - it was undocumented. The first cell is the positive
+PGA input (AINP) and the second the negative input (AINN). The ADS1220
+multiplexer can route AIN1/AIN0 and AIN3/AIN2 with swapped polarity
+(MUX codes 0x6 and 0x7), which is why those two reversed pairs - and
+only those two - appear in the list. v2 documents this in the
+diff-channels description.
+
+> dt_binding_check passes actually. Although this syntax has no other
+> users in the tree. The only other diff-channel user I saw that applied
+> as tight restrictions as this one spelt it out as
+>   items:
+>     - const: 0
+>     - const: 1
+> etc but I have no objection to this if it works.
+
+Since the block form is what the rest of the tree uses, v2 spells the
+pairs out that way.

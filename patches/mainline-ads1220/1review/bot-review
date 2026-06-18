@@ -1,0 +1,413 @@
+[PATCH 0/2] iio: adc: Add Texas Instruments ADS1220 ADC
+In Review
+Author:
+Nguyen Minh Tien <zizuzacker@gmail.com>
+Date:
+6/10/2026, 10:13:40 PM
+Subsystems:
+LKMLdevicetreelinux-iio
+Patches:
+2 / 2
+Model:
+gemini/gemini-3.1-pro-preview
+Sashiko ver.:
+-
+Thread
+[2026-06-10] Nguyen Minh Tien <zizuzacker@gmail.com>: [PATCH 0/2] iio: adc: Add Texas Instruments ADS1220 ADC
+↳ [2026-06-10] Nguyen Minh Tien <zizuzacker@gmail.com>: [PATCH 1/2] dt-bindings: iio: adc: Add TI ADS1220
+↳ [2026-06-10] sashiko-bot@kernel.org: Re: [PATCH 1/2] dt-bindings: iio: adc: Add TI ADS1220
+↳ [2026-06-10] Nguyen Minh Tien <zizuzacker@gmail.com>: [PATCH 2/2] iio: adc: Add TI ADS1220 driver
+Baseline▶ Show Details
+Selected:
+ae696dfa47c30016cd429b9db5e70b259b8f509e / ae696dfa
+AI Reviews
+Patch	Potential Regressions
+Patch 1: [PATCH 1/2] dt-bindings: iio: adc: Add TI ADS1220	
+0
+1
+1
+0
+Patch 2: [PATCH 2/2] iio: adc: Add TI ADS1220 driver	In progress...
+Patch 1: [PATCH 1/2] dt-bindings: iio: adc: Add TI ADS1220
+Result:
+Critical: 0 · High: 1 · Medium: 1 · Low: 0
+Reviewed
+▼ Inline Review
+Copy
+commit 2b3665a0096105a4bb2db6266e47dec0a0802cff
+Author: Nguyen Minh Tien <zizuzacker@gmail.com>
+dt-bindings: iio: adc: Add TI ADS1220
+This commit adds a device tree binding for the TI ADS1220 24-bit ADC.
+It describes the SPI device, its per-input channel child nodes,
+external reference selection, and the DRDY interrupt.
+> diff --git a/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml b/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+> new file mode 100644
+> index 0000000000000..1fedffc2a1475
+> --- /dev/null
+> +++ b/Documentation/devicetree/bindings/iio/adc/ti,ads1220.yaml
+[ ... ]
+> +patternProperties:
+> +  "^channel@[0-6]$":
+> +    $ref: adc.yaml
+> +    type: object
+> +    description: Represents one ADC input configuration (channel).
+> +
+> +    properties:
+> +      reg:
+> +        minimum: 0
+> +        maximum: 6
+The ADS1220 hardware supports 12 unique multiplexer combinations
+(8 differential pairs and 4 single-ended inputs). Does this regex and
+reg maximum artificially limit the device tree to defining at most 7
+channels?
+System integrators might not be able to represent all available
+hardware configurations if this limit is enforced.
+[ ... ]
+> +      diff-channels:
+> +        description:
+> +          Differential input pair routable by the ADS1220 multiplexer.
+> +        oneOf:
+> +          - items: [const: 0, const: 1]
+> +          - items: [const: 0, const: 2]
+> +          - items: [const: 0, const: 3]
+> +          - items: [const: 1, const: 2]
+> +          - items: [const: 1, const: 3]
+> +          - items: [const: 2, const: 3]
+> +          - items: [const: 1, const: 0]
+> +          - items: [const: 3, const: 2]
+Will this syntax pass the dt_binding_check validation?
+In YAML, a flow sequence like [const: 0, const: 1] evaluates to a list
+containing a single implicit mapping with duplicate keys. The dt-schema
+toolchain utilizes a strict parser that typically fails on duplicate
+dictionary keys.
+If it did parse, it would likely collapse the duplicate keys into a
+single element, forcing the diff-channels array to have exactly one
+element instead of the expected two.
+Would it be better to use a valid flow mapping sequence, such as
+- items: [{const: 0}, {const: 1}]?
+
+
+sashiko-bot@kernel.org
+22:43 (0 phút trước)
+đến tôi, conor+dt, devicetree, robh
+
+Thank you for your contribution! Sashiko AI review found 13 potential issue(s) to consider:
+- [Critical] An integer overflow when calculating scale gain leads to a divide-by-zero kernel panic on 32-bit platforms.
+- [High] Inconsistent formatting for IIO_CHAN_INFO_SCALE breaks IIO UAPI contracts. read_raw returns the true scale multiplier, but write_raw expects a gain reciprocal, and read_avail exposes gain reciprocals.
+- [High] Using iio_validate_scan_mask_onehot breaks timestamp functionality and allows an out-of-bounds array read in buffer_preenable.
+- [High] Missing `.validate_trigger` allows external triggers to read asynchronously without the RDATA command, causing data corruption.
+- [High] The `rx` buffer is not DMA-aligned, violating DMA API requirements and risking memory corruption during SPI transfers.
+- [High] Disabling the triggered buffer leaves the ADC in continuous conversion mode, causing DRDY interrupt storms.
+- [High] Missing mutex lock protection for the shared `st->tx` and `st->rx` buffers.
+- [High] Using IRQF_NO_THREAD for a potentially level-triggered interrupt without clearing the interrupt in hardware causes an interrupt storm.
+- [Medium] ads1220_write_raw modifies channel configuration without claiming direct mode, causing races with active buffers and single-shot conversions.
+- [Medium] IIO_CHAN_INFO_OFFSET returns the positive uncalibrated raw value instead of its negated value, causing the offset error to be doubled in user-space.
+- [Medium] Concurrent SPI writes can occur during module removal due to incorrect `devm` cleanup order.
+- [Medium] ads1220_debugfs_reg_access communicates with the device without resuming it from power-down.
+- [Medium] The driver unconditionally fails probe if the AVDD regulator voltage cannot be read, breaking support for dummy regulators.
+--
+
+commit 1ae738a6247e14166f63bc753a84967fb3d54773
+Author: Nguyen Minh Tien <zizuzacker@gmail.com>
+
+iio: adc: Add TI ADS1220 driver
+
+Add an IIO driver for the Texas Instruments ADS1220 24-bit delta-sigma
+SPI ADC. The driver supports single-ended and differential voltage
+channels described as device-tree child nodes, per-channel programmable
+gain (exposed through scale) and data rate, internal and external reference
+options, single-shot conversions and a DRDY-interrupt-driven triggered buffer.
+
+diff --git a/drivers/iio/adc/ti-ads1220.c b/drivers/iio/adc/ti-ads1220.c
+new file mode 100644
+index 0000000000000..06bcc88418b4c
+--- /dev/null
++++ b/drivers/iio/adc/ti-ads1220.c
+[ ... ]
+> +struct ads1220_state {
+> +     struct spi_device *spi;
+> +     struct completion completion;
+> +     struct iio_trigger *trig;
+> +     struct ads1220_channel_config *channels_cfg;
+> +     unsigned int num_channels_cfg;
+> +     int vref_uV;
+> +     unsigned int vref_source;
+> +
+> +     /*
+> +      * DMA-safe buffers. tx is used for command/register writes, rx for
+> +      * register and conversion-result reads. scan holds one sample plus a
+> +      * timestamp for the triggered buffer.
+> +      */
+> +     u8 tx[2] __aligned(IIO_DMA_MINALIGN);
+> +     u8 rx[ADS1220_DATA_BYTES];
+
+[Severity: High]
+Does placing the rx array immediately after the 2-byte tx array without
+alignment cause it to share the same cacheline? If st->rx is passed to
+spi_read(), mapping this unaligned sub-cacheline buffer for DMA might
+corrupt adjacent fields on architectures without hardware cache coherence.
+
+> +     struct {
+> +             s32 sample;
+> +             aligned_s64 timestamp;
+> +     } scan;
+> +};
+[ ... ]
+> +static int ads1220_read_raw(struct iio_dev *indio_dev,
+> +                         const struct iio_chan_spec *chan,
+> +                         int *val, int *val2, long mask)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +     int ret;
+> +
+> +     switch (mask) {
+> +     case IIO_CHAN_INFO_RAW:
+> +             if (!iio_device_claim_direct(indio_dev))
+> +                     return -EBUSY;
+> +             ret = ads1220_single_conversion(st, chan, val, false);
+> +             iio_device_release_direct(indio_dev);
+> +             return ret;
+> +     case IIO_CHAN_INFO_OFFSET:
+> +             if (!iio_device_claim_direct(indio_dev))
+> +                     return -EBUSY;
+> +             ret = ads1220_single_conversion(st, chan, val, true);
+
+[Severity: Medium]
+Should the hardware offset be negated before returning it here?
+ads1220_single_conversion() returns the raw measurement of the shorted inputs.
+Since the standard IIO calibration formula applied by user-space is
+`value = (raw + offset) * scale`, returning a positive offset when the hardware
+reads a positive value will apply the offset in the wrong direction and double
+the error.
+
+> +             iio_device_release_direct(indio_dev);
+> +             return ret;
+> +     case IIO_CHAN_INFO_SCALE:
+> +             /* scale [mV] = vref / (gain * 2^23); gain is a power of two. */
+> +             *val = st->vref_uV / MILLI;
+> +             *val2 = (chan->scan_type.realbits - 1) + ilog2(cfg->gain);
+> +             return IIO_VAL_FRACTIONAL_LOG2;
+
+[Severity: High]
+Are the IIO_CHAN_INFO_SCALE interfaces handling values symmetrically?
+ads1220_read_raw() returns the actual physical scale multiplier here, but
+ads1220_write_raw() treats the user input as a gain reciprocal, and
+ads1220_read_avail() exposes gain reciprocals instead of voltage scales.
+If a user reads the scale and writes the exact same value back, could this
+evaluate to an invalid gain and return -EINVAL?
+
+> +     case IIO_CHAN_INFO_SAMP_FREQ:
+> +             *val = cfg->datarate;
+> +             return IIO_VAL_INT;
+> +     default:
+> +             return -EINVAL;
+> +     }
+> +}
+[ ... ]
+> +static int ads1220_write_raw(struct iio_dev *indio_dev,
+> +                          const struct iio_chan_spec *chan,
+> +                          int val, int val2, long mask)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct ads1220_channel_config *cfg = &st->channels_cfg[chan->address];
+> +     unsigned int gain;
+> +     int i;
+> +
+> +     switch (mask) {
+> +     case IIO_CHAN_INFO_SCALE:
+> +             /* The available scales are the gain reciprocals (e.g. 1/4). */
+> +             if (val == 0 && val2 == 0)
+> +                     return -EINVAL;
+> +
+> +             gain = MICRO / (val * MICRO + val2);
+
+[Severity: Critical]
+Can the expression `(val * MICRO + val2)` overflow on 32-bit platforms if a
+user writes a crafted string (e.g., "4294.967296") to the sysfs scale
+attribute? If the multiplication wraps to exactly zero, does the subsequent
+`gain = MICRO / ...` division result in a divide-by-zero kernel panic?
+
+> +             if (!is_power_of_2(gain) || gain > BIT(ADS1220_NUM_GAINS - 1))
+> +                     return -EINVAL;
+> +             if (cfg->single_ended && gain > ADS1220_MAX_SE_GAIN)
+> +                     return -EINVAL;
+> +
+> +             cfg->gain = gain;
+> +             return 0;
+> +     case IIO_CHAN_INFO_SAMP_FREQ:
+> +             for (i = 0; i < ARRAY_SIZE(ads1220_datarates); i++) {
+> +                     if (ads1220_datarates[i] == val) {
+> +                             cfg->datarate = val;
+
+[Severity: Medium]
+Does modifying cfg->gain and cfg->datarate in ads1220_write_raw() require
+serialization via iio_device_claim_direct()? Modifying these without the lock
+might race with an active triggered buffer or single-shot conversions,
+potentially desynchronizing driver state and hardware or corrupting timeout
+calculations.
+
+> +                             return 0;
+> +                     }
+> +             }
+> +             return -EINVAL;
+> +     default:
+> +             return -EINVAL;
+> +     }
+> +}
+> +
+> +static int ads1220_debugfs_reg_access(struct iio_dev *indio_dev,
+> +                                   unsigned int reg, unsigned int writeval,
+> +                                   unsigned int *readval)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     u8 val;
+> +     int ret;
+> +
+> +     if (reg > ADS1220_MAX_REG)
+> +             return -EINVAL;
+> +
+> +     if (readval) {
+> +             ret = ads1220_read_reg(st, reg, &val);
+
+[Severity: Medium]
+Does ads1220_debugfs_reg_access() need to call pm_runtime_resume_and_get()
+before initiating SPI transfers? If the device is in the autosuspended
+POWERDOWN state, these transactions might fail or return garbage data.
+
+> +             if (ret)
+> +                     return ret;
+> +             *readval = val;
+> +             return 0;
+> +     }
+> +
+> +     return ads1220_write_reg(st, reg, writeval);
+
+[Severity: High]
+Are the shared st->tx and st->rx buffers protected from concurrent access
+here? Writing to st->tx directly via debugfs or pm_runtime_suspend without
+locking could race with an active triggered buffer reading in
+ads1220_trigger_handler(), potentially overwriting the tx buffer mid-transfer
+and sending corrupted SPI commands.
+
+> +}
+> +
+> +static const struct iio_info ads1220_info = {
+> +     .read_raw = ads1220_read_raw,
+> +     .read_avail = ads1220_read_avail,
+> +     .write_raw = ads1220_write_raw,
+> +     .debugfs_reg_access = ads1220_debugfs_reg_access,
+> +};
+
+[Severity: High]
+Does this struct need a .validate_trigger callback to prevent arbitrary
+external triggers from being attached? Without it, external triggers could
+execute asynchronously to the ADC's data-ready signal. The trigger handler
+uses spi_read() directly without an RDATA command, which according to the
+datasheet could return corrupted data if a register update overlaps.
+
+> +
+> +static int ads1220_buffer_preenable(struct iio_dev *indio_dev)
+> +{
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +     struct device *dev = &st->spi->dev;
+> +     struct ads1220_channel_config *cfg;
+> +     unsigned int index;
+> +     int ret;
+> +
+> +     index = find_first_bit(indio_dev->active_scan_mask,
+> +                            iio_get_masklength(indio_dev));
+> +     cfg = &st->channels_cfg[index];
+
+[Severity: High]
+What happens if a user enables ONLY the timestamp channel? The active scan
+mask would have exactly one bit set at index = st->num_channels_cfg. Will
+find_first_bit() return this index and cause an out-of-bounds array read
+on st->channels_cfg[index]?
+[Severity: High]
+Does the device need to be explicitly stopped or powered down here?
+Dropping the PM runtime reference with a 2000ms autosuspend delay leaves
+the ADC running in continuous conversion mode. The hardware might keep
+asserting the DRDY interrupt, but since the buffer is disabled, the IRQ
+handler will only complete the completion without reading data to clear
+the interrupt, potentially causing an immediate IRQ storm.
+
+> +
+> +     return 0;
+> +}
+> +
+> +static const struct iio_buffer_setup_ops ads1220_buffer_setup_ops = {
+> +     .preenable = ads1220_buffer_preenable,
+> +     .postdisable = ads1220_buffer_postdisable,
+> +     .validate_scan_mask = &iio_validate_scan_mask_onehot,
+> +};
+
+[Severity: High]
+Is iio_validate_scan_mask_onehot the correct validator for this device?
+This validator requires exactly one bit in the mask to be set. Since the
+IIO core includes the timestamp channel in the active_scan_mask, enabling
+one data channel plus the timestamp results in 2 bits being set, which
+will cause the validator to reject valid configurations.
+
+[ ... ]
+> +static int ads1220_probe(struct spi_device *spi)
+> +{
+> +     struct device *dev = &spi->dev;
+> +     struct iio_dev *indio_dev;
+> +     struct ads1220_state *st;
+> +     int avdd_uV;
+> +     int ret;
+[ ... ]
+> +     ret = devm_regulator_get_enable(dev, "dvdd");
+> +     if (ret)
+> +             return dev_err_probe(dev, ret, "Failed to enable dvdd\n");
+> +
+> +     avdd_uV = devm_regulator_get_enable_read_voltage(dev, "avdd");
+> +     if (avdd_uV < 0)
+> +             return dev_err_probe(dev, avdd_uV, "Failed to get avdd\n");
+
+[Severity: Medium]
+Should the driver fail probe unconditionally here? If the devicetree does
+not explicitly model the AVDD supply, the core passes a dummy regulator.
+Reading the voltage from a dummy regulator returns -EINVAL, which might
+prevent the driver from probing entirely on such systems, even when
+ti,vref-avdd is not specified.
+
+[ ... ]
+> +     if (spi->irq > 0) {
+> +             ret = devm_request_irq(dev, spi->irq, ads1220_irq_handler,
+> +                                    IRQF_NO_THREAD, "ads1220", indio_dev);
+
+[Severity: High]
+Can using IRQF_NO_THREAD without clearing the physical DRDY line cause an
+interrupt storm? The hardirq handler immediately returns IRQ_HANDLED
+without issuing an SPI transaction to read the data. If the interrupt is
+configured as level-triggered, the interrupt controller might repeatedly
+re-fire the interrupt upon return. Does this need IRQF_ONESHOT with a
+threaded handler, or an explicit enforcement of IRQF_TRIGGER_FALLING?
+[Severity: Medium]
+Will registering ads1220_powerdown after pm_runtime_enable cause a teardown
+ordering issue? Since devm executes cleanups in reverse order, powerdown
+would execute before PM runtime is disabled. Could the PM autosuspend
+workqueue trigger ads1220_runtime_suspend at the same moment powerdown
+is executing, causing a data race on the unprotected st->tx buffer?
+
+> +     if (ret)
+> +             return ret;
+> +
+> +     return devm_iio_device_register(dev, indio_dev);
+> +}
+> +
+> +static int ads1220_runtime_suspend(struct device *dev)
+> +{
+> +     struct iio_dev *indio_dev = dev_get_drvdata(dev);
+> +     struct ads1220_state *st = iio_priv(indio_dev);
+> +
+> +     return ads1220_command(st, ADS1220_CMD_POWERDOWN);
+> +}
+
+[Severity: High]
+Does ads1220_runtime_suspend() overwrite the shared st->tx buffer without
+locking? This asynchronous PM runtime suspend could execute concurrently
+with an active triggered buffer reading or other SPI transactions, corrupting
+the sent SPI commands.
