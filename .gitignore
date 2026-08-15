@@ -1,4 +1,5 @@
 output/
+output-new/
 files/sdimg
 files/sdimg.bmap
 *.o
@@ -6,3 +7,17 @@ files/sdimg.bmap
 *.mod.c
 boot.scr
 .claude/
+.vscode/
+
+# Scratch capture from the serial console / adb, not part of the guide.
+dmesg
+
+# Ready-to-flash whole-card image (~58MB) and its block map.
+# Deliberately NOT committed: git stores every version forever, this repo's
+# history is already large, and GitHub warns above 50MB. Attach it to a GitHub
+# Release instead and link it from the README.
+# Anyone can regenerate it, or just build from source:
+#   ./scripts/build-uboot.sh && ./scripts/build-kernel.sh
+#   ./scripts/flash-sd.sh /dev/sdX
+files/f1c100s-adb-sdcard.img.xz
+files/f1c100s-adb-sdcard.img.bmap
